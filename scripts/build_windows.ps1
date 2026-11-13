@@ -13,7 +13,7 @@ python -m pip install -q -r requirements.txt
 if ($LASTEXITCODE) { throw "pip install failed" }
 
 # RapidOCR's optional engines would pull in PyTorch and friends; it only needs onnxruntime here.
-$exclude = 'torch', 'torchvision', 'tensorrt', 'paddle', 'openvino', 'MNN', 'matplotlib', 'scipy', 'pandas', 'IPython' |
+$exclude = 'platform_mac', 'torch', 'torchvision', 'tensorrt', 'paddle', 'openvino', 'MNN', 'matplotlib', 'scipy', 'pandas', 'IPython' |
     ForEach-Object { '--exclude-module', $_ }
 python -m PyInstaller --noconfirm --clean --windowed --name RemoteSub --paths src `
     --collect-all rapidocr --hidden-import oneocr @exclude `

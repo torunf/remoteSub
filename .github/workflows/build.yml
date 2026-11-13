@@ -21,7 +21,7 @@ jobs:
       - name: Build installer
         shell: pwsh
         run: |
-          $version = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}".TrimStart("v") } else { "0.0.0-dev" }
+          $version = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}".TrimStart("v") } else { "0.0.0" }
           ./scripts/build_windows.ps1 -Version $version
       - uses: actions/upload-artifact@v4
         with:
@@ -32,3 +32,25 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/RemoteSub-Setup-*.exe
+
+  macos:
+    # Apple Silicon runner: chiaki-ng only ships arm64 macOS builds.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build installer
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then version="${GITHUB_REF_NAME#v}"; else version="0.0.0"; fi
+          ./scripts/build_mac.sh "$version"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RemoteSub-macos
+          path: dist/RemoteSub-*.pkg
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/RemoteSub-*.pkg

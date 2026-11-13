@@ -1,32 +1,25 @@
 """First-run setup for RemoteSub.
 
 Checks and, where it can, installs and configures everything the app depends on:
-chiaki-ng, the PS5 pairing in chiaki-ng, Ollama, the TranslateGemma model and OCR.
-Each step fills in the machine-specific config values (paths, console name, Ollama URL, model).
+chiaki-ng, the PS5 pairing in chiaki-ng, chiaki-ng's settings, Ollama, the TranslateGemma model,
+OCR and (on macOS) permissions. Each step fills in the machine-specific config values
+(paths, console name, Ollama URL, model). Platform details live in platform_win/platform_mac.
 """
 import json
-import os
 import queue
-import shutil
-import subprocess
-import tempfile
+import sys
 import threading
 import time
 import tkinter as tk
 import urllib.request
-import winreg
 from tkinter import ttk
 
 import ocr_engine
 
-NO_WINDOW = subprocess.CREATE_NO_WINDOW
-CHIAKI_KEY = r"Software\Chiaki\Chiaki"
-UNINSTALL_KEYS = [
-    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
-    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
-    (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
-]
-OLLAMA_SETUP_URL = "https://ollama.com/download/OllamaSetup.exe"
+if sys.platform == "darwin":
+    import platform_mac as plat
+else:
+    import platform_win as plat
 
 PAIRING_HELP = (
     "PS5'i chiaki-ng ile bir kez eşleştirmek gerekiyor:\n"
@@ -38,170 +31,9 @@ PAIRING_HELP = (
 )
 
 
-# ---------------------------------------------------------------- helpers
-
-def run(cmd, timeout=None):
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, creationflags=NO_WINDOW)
-
-
-def winget_available():
-    try:
-        return run(["winget", "--version"], timeout=30).returncode == 0
-    except Exception:
-        return False
-
-
-def winget_install(package_id):
-    run(["winget", "install", "--id", package_id, "-e", "--silent", "--disable-interactivity",
-         "--accept-package-agreements", "--accept-source-agreements"], timeout=3600)
-
-
-def download(url, path, report):
-    with urllib.request.urlopen(url, timeout=60) as r, open(path, "wb") as f:
-        total = int(r.headers.get("Content-Length") or 0)
-        done = 0
-        while chunk := r.read(1 << 20):
-            f.write(chunk)
-            done += len(chunk)
-            if total:
-                report(f"İndiriliyor… {done >> 20} / {total >> 20} MB", done / total)
-
-
-def github_latest_asset(repo, match):
-    with urllib.request.urlopen(f"https://api.github.com/repos/{repo}/releases/latest", timeout=30) as r:
-        release = json.load(r)
-    for asset in release.get("assets", []):
-        if match(asset["name"].lower()):
-            return asset["browser_download_url"], asset["name"]
-    return None, None
-
-
-def run_installer(path, args=()):
-    """Run a downloaded installer and wait for it (it may show its own windows and a UAC prompt)."""
-    subprocess.run([path, *args])
-
-
-def uninstall_location(name_part):
-    for hive, key in UNINSTALL_KEYS:
-        try:
-            root = winreg.OpenKey(hive, key)
-        except OSError:
-            continue
-        for i in range(winreg.QueryInfoKey(root)[0]):
-            try:
-                sub = winreg.OpenKey(root, winreg.EnumKey(root, i))
-                name = winreg.QueryValueEx(sub, "DisplayName")[0]
-            except OSError:
-                continue
-            if name_part.lower() in str(name).lower():
-                for value in ("InstallLocation", "DisplayIcon"):
-                    try:
-                        path = str(winreg.QueryValueEx(sub, value)[0]).strip('"').split(",")[0]
-                    except OSError:
-                        continue
-                    if path:
-                        return path if os.path.isdir(path) else os.path.dirname(path)
-    return None
-
-
-# ---------------------------------------------------------------- chiaki-ng
-
-def find_chiaki():
-    candidates = [os.path.join(os.environ.get(v, ""), "chiaki-ng", "chiaki.exe")
-                  for v in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA")]
-    candidates.append(os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "chiaki-ng", "chiaki.exe"))
-    location = uninstall_location("chiaki-ng")
-    if location:
-        candidates.insert(0, os.path.join(location, "chiaki.exe"))
-    return next((c for c in candidates if os.path.isfile(c)), None)
-
-
-def chiaki_running():
-    out = run(["tasklist", "/FI", "IMAGENAME eq chiaki.exe", "/NH"]).stdout
-    return "chiaki.exe" in out.lower()
-
-
-def chiaki_hosts():
-    """Consoles paired in chiaki-ng: [{"nickname", "mac": (value, type)}]."""
-    try:
-        root = winreg.OpenKey(winreg.HKEY_CURRENT_USER, CHIAKI_KEY + r"\registered_hosts")
-    except OSError:
-        return []
-    hosts, i = [], 1
-    while True:
-        try:
-            sub = winreg.OpenKey(root, str(i))
-        except OSError:
-            break
-        try:
-            hosts.append({"nickname": winreg.QueryValueEx(sub, "server_nickname")[0],
-                          "mac": winreg.QueryValueEx(sub, "server_mac")})
-        except OSError:
-            pass
-        i += 1
-    return hosts
-
-
-def apply_chiaki_settings(nickname):
-    """Settings RemoteSub relies on. Only call while chiaki-ng is closed: it keeps its own copy.
-
-    - hw_decoder d3d11va: chiaki-ng's automatic choice (Vulkan) showed a corrupted, blue,
-      flickering picture on a dual-GPU PC; d3d11va decodes on the GPU reliably on Windows.
-    - auto_connect_mac: chiaki-ng connects to this console by itself once it sees it, which is
-      how RemoteSub opens the stream in one step (its `stream` command stalls in 1.9.9).
-    """
-    key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, CHIAKI_KEY + r"\settings")
-    try:
-        decoder = winreg.QueryValueEx(key, "hw_decoder")[0]
-    except OSError:
-        decoder = None
-    if decoder in (None, "", "auto", "vulkan"):
-        winreg.SetValueEx(key, "hw_decoder", 0, winreg.REG_SZ, "d3d11va")
-    host = next((h for h in chiaki_hosts() if h["nickname"] == nickname), None)
-    if host:
-        value, kind = host["mac"]
-        winreg.SetValueEx(key, "auto_connect_mac", 0, kind, value)
-
-
-def chiaki_settings_ok(nickname):
-    """Are the settings from apply_chiaki_settings in place for this console?"""
-    try:
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, CHIAKI_KEY + r"\settings")
-        decoder = winreg.QueryValueEx(key, "hw_decoder")[0]
-        auto_mac = winreg.QueryValueEx(key, "auto_connect_mac")[0]
-    except OSError:
-        return False
-    host = next((h for h in chiaki_hosts() if h["nickname"] == nickname), None)
-    return decoder == "d3d11va" and host is not None and auto_mac == host["mac"][0]
-
-
-def close_chiaki():
-    """Ask chiaki-ng to quit (it would otherwise keep, and later save, its old settings)."""
-    run(["taskkill", "/IM", "chiaki.exe"])
-    for _ in range(20):
-        if not chiaki_running():
-            return
-        time.sleep(0.5)
-    run(["taskkill", "/F", "/IM", "chiaki.exe"])
-    time.sleep(1)
-
-
 # ---------------------------------------------------------------- Ollama and the model
 
-def ollama_exe(name="ollama.exe"):
-    path = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", name)
-    return path if os.path.isfile(path) else (shutil.which(name) if name == "ollama.exe" else None)
-
-
-def _ollama_host_setting():
-    host = os.environ.get("OLLAMA_HOST")
-    if not host:
-        try:
-            host = winreg.QueryValueEx(winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment"), "OLLAMA_HOST")[0]
-        except OSError:
-            host = None
-    if not host:
-        return None
+def _normalize_host(host):
     host = host.replace("0.0.0.0", "127.0.0.1")
     if "://" not in host:
         host = "http://" + host
@@ -219,18 +51,15 @@ def ollama_version(url):
 
 
 def find_ollama_url():
-    for url in (_ollama_host_setting(), "http://127.0.0.1:11434"):
+    setting = plat.ollama_host_setting()
+    for url in (_normalize_host(setting) if setting else None, "http://127.0.0.1:11434"):
         if url and ollama_version(url):
             return url
     return None
 
 
 def start_ollama():
-    app = ollama_exe("ollama app.exe")
-    if app:
-        subprocess.Popen([app], creationflags=NO_WINDOW)
-    elif ollama_exe():
-        subprocess.Popen([ollama_exe(), "serve"], creationflags=NO_WINDOW)
+    plat.launch_ollama()
     for _ in range(60):
         url = find_ollama_url()
         if url:
@@ -239,28 +68,9 @@ def start_ollama():
     return None
 
 
-def vram_gb():
-    """Largest dedicated video memory among the display adapters, in GB."""
-    best = 0
-    try:
-        cls = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                             r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}")
-    except OSError:
-        return 0
-    for i in range(winreg.QueryInfoKey(cls)[0]):
-        try:
-            value = winreg.QueryValueEx(winreg.OpenKey(cls, winreg.EnumKey(cls, i)), "HardwareInformation.qwMemorySize")[0]
-        except OSError:
-            continue
-        if isinstance(value, bytes):
-            value = int.from_bytes(value, "little")
-        best = max(best, int(value))
-    return best / 2 ** 30
-
-
 def choose_model():
-    # translategemma:12b needs ~8 GB of VRAM and is clearly better in Turkish; 4b fits smaller cards.
-    return "translategemma:12b" if vram_gb() >= 10 else "translategemma:4b"
+    # translategemma:12b is clearly better in Turkish; 4b fits machines with less (video) memory.
+    return "translategemma:12b" if plat.model_memory_gb() >= plat.LARGE_MODEL_MIN_GB else "translategemma:4b"
 
 
 def model_installed(url, model):
@@ -298,31 +108,19 @@ def build_steps(cfg, app_dir):
     """Each check returns (ok, detail) and records what it finds in cfg; each fix may raise."""
 
     def check_chiaki():
-        path = find_chiaki()
+        path = plat.find_chiaki()
         if path:
             cfg["chiaki_path"] = path
             return True, "Kurulu"
         return False, "Kurulu değil"
 
     def fix_chiaki(report):
-        if winget_available():
-            report("chiaki-ng winget ile kuruluyor… (izin penceresi çıkabilir)", None)
-            winget_install("StreetPea.chiaki-ng")
-        if not find_chiaki():
-            report("chiaki-ng indiriliyor…", None)
-            url, name = github_latest_asset("streetpea/chiaki-ng",
-                                            lambda n: n.endswith(".exe") and "win" in n and "x64" in n)
-            if not url:
-                raise RuntimeError("chiaki-ng kurulum dosyası bulunamadı")
-            path = os.path.join(tempfile.gettempdir(), name)
-            download(url, path, report)
-            report("chiaki-ng kurulumu açıldı, adımları tamamla…", None)
-            run_installer(path)
-        if not find_chiaki():
+        plat.install_chiaki(report)
+        if not plat.find_chiaki():
             raise RuntimeError("chiaki-ng kurulamadı")
 
     def check_pairing():
-        hosts = chiaki_hosts()
+        hosts = plat.chiaki_hosts()
         if not hosts:
             return False, "PS5 eşleştirilmedi"
         if cfg.get("ps5_nickname") not in [h["nickname"] for h in hosts]:
@@ -330,28 +128,28 @@ def build_steps(cfg, app_dir):
         return True, cfg["ps5_nickname"]
 
     def fix_pairing(report):
-        if not chiaki_running():
-            apply_chiaki_settings(None)  # decoder default before the first stream
-            subprocess.Popen([cfg["chiaki_path"]], creationflags=NO_WINDOW)
+        if not plat.chiaki_running():
+            plat.apply_chiaki_settings(None)  # decoder default before the first stream
+            plat.launch_chiaki(cfg["chiaki_path"])
         report(PAIRING_HELP, None, help_text=True)
-        while not chiaki_hosts():
+        while not plat.chiaki_hosts():
             time.sleep(2)
 
     def check_chiaki_settings():
         if not cfg.get("ps5_nickname"):
             return False, "Önce PS5 eşleştirilmeli"
-        if chiaki_settings_ok(cfg["ps5_nickname"]):
-            return True, "d3d11va çözücü · otomatik bağlanma"
+        if plat.chiaki_settings_ok(cfg["ps5_nickname"]):
+            return True, plat.CHIAKI_SETTINGS_SUMMARY
         return False, "Ayarlanmadı"
 
     def fix_chiaki_settings(report):
         if not cfg.get("ps5_nickname"):
             raise RuntimeError("Önce PS5 eşleştirilmeli")
-        if chiaki_running():
+        if plat.chiaki_running():
             report("chiaki-ng ayarlar için kapatılıyor…", None)
-            close_chiaki()
-        apply_chiaki_settings(cfg["ps5_nickname"])
-        if not chiaki_settings_ok(cfg["ps5_nickname"]):
+            plat.close_chiaki()
+        plat.apply_chiaki_settings(cfg["ps5_nickname"])
+        if not plat.chiaki_settings_ok(cfg["ps5_nickname"]):
             raise RuntimeError("chiaki-ng ayarları yazılamadı")
 
     def check_ollama():
@@ -359,18 +157,13 @@ def build_steps(cfg, app_dir):
         if url:
             cfg["ollama_url"] = url
             return True, f"Çalışıyor ({url.split('//')[1]})"
-        return False, "Kurulu, çalışmıyor" if ollama_exe() else "Kurulu değil"
+        return False, "Kurulu, çalışmıyor" if plat.ollama_installed() else "Kurulu değil"
 
     def fix_ollama(report):
-        if not ollama_exe():
-            if winget_available():
-                report("Ollama winget ile kuruluyor…", None)
-                winget_install("Ollama.Ollama")
-            if not ollama_exe():
-                path = os.path.join(tempfile.gettempdir(), "OllamaSetup.exe")
-                download(OLLAMA_SETUP_URL, path, report)
-                report("Ollama kurulumu açıldı, adımları tamamla…", None)
-                run_installer(path)
+        if not plat.ollama_installed():
+            plat.install_ollama(report)
+            if not plat.ollama_installed():
+                raise RuntimeError("Ollama kurulamadı")
         report("Ollama başlatılıyor…", None)
         if not start_ollama():
             raise RuntimeError("Ollama başlatılamadı")
@@ -392,11 +185,12 @@ def build_steps(cfg, app_dir):
         pull_model(url, cfg["model"], report)
 
     def check_ocr():
-        if ocr_engine.prepare_oneocr(os.path.join(app_dir, "oneocr")):
-            return True, "OneOCR (Windows Ekran Alıntısı Aracı)"
-        return True, "RapidOCR (Ekran Alıntısı Aracı yok)"
+        return True, ocr_engine.describe(app_dir)
 
-    return [
+    def fix_permissions(report):
+        plat.request_permissions(report)
+
+    steps = [
         Step("chiaki-ng", check_chiaki, fix_chiaki),
         Step("PS5 eşleştirme", check_pairing, fix_pairing),
         Step("chiaki-ng ayarları", check_chiaki_settings, fix_chiaki_settings),
@@ -404,6 +198,9 @@ def build_steps(cfg, app_dir):
         Step("Çeviri modeli", check_model, fix_model),
         Step("OCR", check_ocr, None),
     ]
+    if plat.NEEDS_PERMISSIONS:
+        steps.append(Step("İzinler", plat.permissions_ok, fix_permissions))
+    return steps
 
 
 def run_checks(steps):

@@ -1,7 +1,17 @@
-mss==10.2.0
 pillow==12.2.0
-numpy==2.4.4
-rapidocr==3.10.0
-onnxruntime==1.32.0
-oneocr==1.0.12; sys_platform == "win32"
 pyinstaller==6.22.3
+
+# Windows: screen capture and OCR (OneOCR from the Snipping Tool, RapidOCR as fallback)
+mss==10.2.0; sys_platform == "win32"
+numpy==2.4.4; sys_platform == "win32"
+rapidocr==3.10.0; sys_platform == "win32"
+onnxruntime==1.32.0; sys_platform == "win32"
+oneocr==1.0.12; sys_platform == "win32"
+
+# macOS: window capture, Vision OCR, overlay window, permissions and hotkeys
+pyobjc-framework-Cocoa>=10.3; sys_platform == "darwin"
+pyobjc-framework-Quartz>=10.3; sys_platform == "darwin"
+pyobjc-framework-Vision>=10.3; sys_platform == "darwin"
+pyobjc-framework-ScreenCaptureKit>=10.3; sys_platform == "darwin"
+pyobjc-framework-ApplicationServices>=10.3; sys_platform == "darwin"
+pynput>=1.7.7; sys_platform == "darwin"

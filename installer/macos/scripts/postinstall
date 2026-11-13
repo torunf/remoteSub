@@ -1,0 +1,14 @@
+#!/bin/sh
+# Runs as root once RemoteSub.app and chiaki-ng.app are in /Applications.
+for app in /Applications/RemoteSub.app /Applications/chiaki-ng.app; do
+    [ -d "$app" ] && xattr -dr com.apple.quarantine "$app" 2>/dev/null
+done
+
+# Open RemoteSub for the signed-in user so its setup window finishes the job
+# (PS5 pairing, chiaki-ng settings, Ollama, the model, permissions).
+user=$(stat -f%Su /dev/console)
+if [ -n "$user" ] && [ "$user" != "root" ]; then
+    uid=$(id -u "$user")
+    launchctl asuser "$uid" sudo -u "$user" open -a /Applications/RemoteSub.app --args --setup || true
+fi
+exit 0

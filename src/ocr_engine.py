@@ -1,11 +1,14 @@
-"""OCR backends: Windows' OneOCR (taken from the Snipping Tool) when available, RapidOCR otherwise.
+"""OCR backends.
 
-OneOCR is Microsoft's and is not redistributed with RemoteSub; it is copied at runtime from the
-Snipping Tool that ships with Windows 11. RapidOCR (open source) is bundled as the fallback.
+Windows: Microsoft's OneOCR (copied at runtime from the Snipping Tool that ships with Windows 11;
+it is not redistributed with RemoteSub), or the bundled open-source RapidOCR when it is missing.
+macOS: Apple's Vision framework, built into the system.
 """
+import io
 import os
 import shutil
 import subprocess
+import sys
 
 ONEOCR_FILES = ("oneocr.dll", "oneocr.onemodel", "onnxruntime.dll")
 
@@ -38,9 +41,22 @@ def prepare_oneocr(target_dir):
     return False
 
 
+def describe(app_dir):
+    """Which engine OCR will use, for the setup window."""
+    if sys.platform == "darwin":
+        return "Apple Vision"
+    if prepare_oneocr(os.path.join(app_dir, "oneocr")):
+        return "OneOCR (Windows Ekran Alıntısı Aracı)"
+    return "RapidOCR (Ekran Alıntısı Aracı yok)"
+
+
 class OcrEngine:
-    def __init__(self, oneocr_dir, log=print):
+    def __init__(self, app_dir, log=print):
         self.name = None
+        if sys.platform == "darwin":
+            self._init_vision()
+            return
+        oneocr_dir = os.path.join(app_dir, "oneocr")
         if prepare_oneocr(oneocr_dir):
             try:
                 import oneocr
@@ -58,9 +74,35 @@ class OcrEngine:
         self._rapid = RapidOCR()
         self.name = "RapidOCR"
 
+    def _init_vision(self):
+        import Vision
+        from Foundation import NSData
+        self._vision, self._nsdata = Vision, NSData
+        self.name = "Apple Vision"
+
     def lines(self, image):
         """Text lines in a PIL image, top to bottom."""
         if self.name == "OneOCR":
             return [line.get("text", "") for line in self._oneocr.recognize_pil(image).get("lines", [])]
+        if self.name == "Apple Vision":
+            return self._vision_lines(image)
         result = self._rapid(self._np.asarray(image.convert("RGB")))
         return list(result.txts or [])
+
+    def _vision_lines(self, image):
+        buf = io.BytesIO()
+        image.save(buf, "PNG")
+        data = self._nsdata.dataWithBytes_length_(buf.getvalue(), buf.tell())
+        handler = self._vision.VNImageRequestHandler.alloc().initWithData_options_(data, None)
+        request = self._vision.VNRecognizeTextRequest.alloc().init()
+        request.setRecognitionLevel_(self._vision.VNRequestTextRecognitionLevelAccurate)
+        request.setRecognitionLanguages_(["en-US"])
+        request.setUsesLanguageCorrection_(True)
+        handler.performRequests_error_([request], None)
+        found = []
+        for observation in request.results() or []:
+            candidates = observation.topCandidates_(1)
+            if candidates:
+                # Vision's origin is bottom-left, so a higher y is further up the image.
+                found.append((-observation.boundingBox().origin.y, candidates[0].string()))
+        return [text for _, text in sorted(found)]

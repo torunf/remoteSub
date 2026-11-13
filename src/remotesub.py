@@ -1,22 +1,19 @@
 """RemoteSub: translates game subtitles shown in the chiaki-ng window.
 
-Reads a per-game subtitle region of the chiaki-ng stream with OneOCR, translates new lines
+Reads a per-game subtitle region of the chiaki-ng stream with OCR, translates new lines
 with TranslateGemma (Ollama) and shows the translation in a click-through overlay.
 Regions are stored as fractions of the 16:9 video area, so they survive moving or
 resizing the chiaki-ng window.
 
-Hotkeys: Ctrl+Alt+T start/stop, Ctrl+Alt+R select region, Ctrl+Alt+H hide/show overlay,
-Ctrl+Alt+S screenshot with the overlay (saved under %APPDATA%\\PSAltyazi\\shots).
+Hotkeys: Ctrl+Alt (Ctrl+Option on macOS) + T start/stop, R select region, H hide/show overlay,
+S screenshot with the overlay. Platform specifics live in platform_win.py and platform_mac.py.
 """
-import ctypes
-import ctypes.wintypes as wt
 import difflib
 import json
 import os
 import queue
 import shutil
 import socket
-import subprocess
 import sys
 import threading
 import time
@@ -24,23 +21,19 @@ import tkinter as tk
 import urllib.request
 from tkinter import messagebox, simpledialog, ttk
 
-import mss
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageTk
 
 import setup_steps
 from ocr_engine import OcrEngine
 
-# Physical pixels everywhere: window rects, screen capture and Tk geometry must agree.
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)
-except Exception:
-    ctypes.windll.user32.SetProcessDPIAware()
+if sys.platform == "darwin":
+    import platform_mac as plat
+else:
+    import platform_win as plat
 
-user32 = ctypes.windll.user32
-kernel32 = ctypes.windll.kernel32
-gdi32 = ctypes.windll.gdi32
+plat.init_process()
 
-APP_DIR = os.path.join(os.environ["APPDATA"], "RemoteSub")
+APP_DIR = plat.APP_DIR
 CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 LOG_PATH = os.path.join(APP_DIR, "log.txt")
 SHOTS_DIR = os.path.join(APP_DIR, "shots")
@@ -58,7 +51,7 @@ DEFAULT_CONFIG = {
     "ps5_nickname": "",          # the console paired in chiaki-ng
     "ps5_host": "",              # refreshed by discovery at every connect
     "auto_connect": True,        # start the chiaki-ng stream when RemoteSub opens
-    "chiaki_extra_args": [],     # extra chiaki.exe arguments, e.g. ["--dualsense"]
+    "chiaki_extra_args": [],     # extra chiaki-ng arguments, e.g. ["--dualsense"]
     "last_profile": "Varsayılan",
     "profiles": {"Varsayılan": dict(DEFAULT_PROFILE)},
 }
@@ -81,9 +74,9 @@ def log(line):
 
 
 def load_config():
-    legacy = os.path.join(os.environ["APPDATA"], "PSAltyazi", "config.json")
+    legacy = plat.LEGACY_APP_DIR and os.path.join(plat.LEGACY_APP_DIR, "config.json")
     os.makedirs(APP_DIR, exist_ok=True)
-    if not os.path.exists(CONFIG_PATH) and os.path.exists(legacy):
+    if legacy and not os.path.exists(CONFIG_PATH) and os.path.exists(legacy):
         shutil.copy2(legacy, CONFIG_PATH)  # profiles from the app's earlier name
     cfg = json.loads(json.dumps(DEFAULT_CONFIG))
     try:
@@ -139,63 +132,6 @@ def discover_ps5(nickname, known_host, timeout=1.5):
 
 
 # ---------------------------------------------------------------- chiaki-ng window geometry
-
-_process_names = {}
-
-
-def process_name(pid):
-    if pid not in _process_names:
-        name = ""
-        h = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-        if h:
-            buf, size = ctypes.create_unicode_buffer(260), wt.DWORD(260)
-            if kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
-                name = os.path.basename(buf.value).lower()
-            kernel32.CloseHandle(h)
-        _process_names[pid] = name
-    return _process_names[pid]
-
-
-def client_rect(hwnd):
-    """Client area of a window in screen coordinates: (x, y, w, h)."""
-    r = wt.RECT()
-    if not user32.GetClientRect(hwnd, ctypes.byref(r)):
-        return None
-    pt = wt.POINT(0, 0)
-    user32.ClientToScreen(hwnd, ctypes.byref(pt))
-    return pt.x, pt.y, r.right, r.bottom
-
-
-def find_chiaki_window():
-    """The largest visible chiaki.exe window, which is the stream window while playing."""
-    found = []
-
-    @ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
-    def visit(hwnd, _):
-        if user32.IsWindowVisible(hwnd) and not user32.IsIconic(hwnd):
-            pid = wt.DWORD()
-            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-            if process_name(pid.value) == "chiaki.exe":
-                rect = client_rect(hwnd)
-                if rect and rect[2] > 100 and rect[3] > 100:
-                    found.append((rect[2] * rect[3], hwnd))
-        return True
-
-    user32.EnumWindows(visit, 0)
-    return max(found)[1] if found else None
-
-
-user32.WindowFromPoint.argtypes = [wt.POINT]
-user32.WindowFromPoint.restype = wt.HWND
-user32.GetAncestor.argtypes = [wt.HWND, ctypes.c_uint]
-user32.GetAncestor.restype = wt.HWND
-
-
-def chiaki_on_top(hwnd, x, y):
-    """Is the chiaki-ng window the one visible at (x, y)? Our click-through overlay is skipped."""
-    top = user32.GetAncestor(user32.WindowFromPoint(wt.POINT(x, y)), 2)  # GA_ROOT
-    return top == hwnd
-
 
 def video_rect(client):
     """chiaki-ng letterboxes the 16:9 stream inside its client area."""
@@ -297,9 +233,9 @@ class Pipeline(threading.Thread):
 
     def run(self):
         threading.Thread(target=self.translator.warm_up, daemon=True).start()
-        ocr = OcrEngine(os.path.join(APP_DIR, "oneocr"), log)
+        ocr = OcrEngine(APP_DIR, log)
         log(f"OCR engine: {ocr.name}")
-        grabber = mss.MSS() if hasattr(mss, "MSS") else mss.mss()
+        capturer = plat.Capturer()
         hwnd, next_find = None, 0.0
         shown_src = ""            # source text of the translation currently on screen
         candidate, candidate_reads, first_seen = "", 0, 0.0
@@ -318,18 +254,18 @@ class Pipeline(threading.Thread):
                 continue
             cycle_start = time.perf_counter()
 
-            if hwnd is None or not user32.IsWindow(hwnd) or cycle_start >= next_find:
-                hwnd, next_find = find_chiaki_window(), cycle_start + 1.0
+            if hwnd is None or not plat.window_valid(hwnd) or cycle_start >= next_find:
+                hwnd, next_find = plat.find_chiaki_window(), cycle_start + 1.0
             profile = self.app.current_profile()
             if hwnd is None:
                 self.post("status", "chiaki-ng penceresi bulunamadı")
                 time.sleep(0.5)
                 continue
             if not profile.get("region"):
-                self.post("status", "Bu profil için bölge seçilmemiş (Ctrl+Alt+R)")
+                self.post("status", f"Bu profil için bölge seçilmemiş ({hotkey_label('R')})")
                 time.sleep(0.5)
                 continue
-            client = client_rect(hwnd)
+            client = plat.client_rect(hwnd)
             if not client or client[2] < 100 or client[3] < 100:
                 time.sleep(0.5)
                 continue
@@ -339,18 +275,17 @@ class Pipeline(threading.Thread):
                 self.post("move", box)
 
             x, y, w, h = box
-            if not chiaki_on_top(hwnd, x + w // 2, y + h // 2):
-                # Screen capture reads whatever is on top; don't translate the taskbar or a browser.
-                self.post("status", "chiaki-ng penceresi önde değil")
+            if not plat.chiaki_visible_at(hwnd, x + w // 2, y + h // 2):
+                # Nothing of chiaki-ng to read there; don't translate the taskbar or a browser.
+                self.post("status", "chiaki-ng penceresi görünmüyor")
                 if shown_src:
                     self.post("hide")
                     shown_src = ""
                 candidate, candidate_reads = "", 0
                 time.sleep(0.3)
                 continue
-            shot = grabber.grab({"left": x, "top": y, "width": w, "height": h})
+            frame = capturer.grab(hwnd, box)
             t_ocr = time.perf_counter()
-            frame = Image.frombytes("RGB", shot.size, shot.rgb)
             text, n_lines = extract_text(ocr.lines(frame))
             ocr_ms = (time.perf_counter() - t_ocr) * 1000
             self.post("status", f"Çalışıyor · OCR {ocr_ms:.0f} ms")
@@ -391,27 +326,19 @@ class Pipeline(threading.Thread):
 
 # ---------------------------------------------------------------- windows: overlay, region picker
 
-GWL_EXSTYLE = -20
-WS_EX_LAYERED, WS_EX_TRANSPARENT = 0x80000, 0x20
-WS_EX_TOOLWINDOW, WS_EX_NOACTIVATE = 0x80, 0x08000000
-WDA_EXCLUDEFROMCAPTURE = 0x11
-
-
-def toplevel_hwnd(win):
-    win.update_idletasks()
-    return user32.GetParent(win.winfo_id())
-
-
-FONT_FILES = [r"C:\Windows\Fonts\seguisb.ttf", r"C:\Windows\Fonts\segoeui.ttf"]
 TEXT_COLOR = (246, 244, 238)
 _fonts = {}
 
 
 def subtitle_font(px):
     if px not in _fonts:
-        for path in FONT_FILES:
+        for path in plat.FONT_FILES:
             if os.path.exists(path):
                 _fonts[px] = ImageFont.truetype(path, px)
+                try:  # variable system fonts (macOS SF): use the semibold instance
+                    _fonts[px].set_variation_by_name("Semibold")
+                except Exception:
+                    pass
                 break
         else:
             _fonts[px] = ImageFont.load_default()
@@ -488,14 +415,9 @@ class Overlay:
         self.label.pack(fill="both", expand=True)
         self.photo = None
         self.background = None
-        self.hwnd = hwnd = toplevel_hwnd(self.win)
-        # Click-through, never focused, and invisible to screen capture so our own text
-        # is never read back by the OCR.
-        style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        user32.SetWindowLongW(hwnd, GWL_EXSTYLE,
-                              style | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)
-        if not self.set_capturable(False):
-            log("SetWindowDisplayAffinity failed; use the 'above' placement")
+        # Click-through, never focused, and kept out of screen capture so the OCR never reads
+        # our own text back.
+        self.handle = plat.prepare_overlay(self.win)
         self.win.withdraw()
         self.box = None
         self.text = ""
@@ -503,7 +425,7 @@ class Overlay:
         self.font_size, self.placement = 20, "cover"
 
     def set_capturable(self, capturable):
-        return user32.SetWindowDisplayAffinity(self.hwnd, 0 if capturable else WDA_EXCLUDEFROMCAPTURE)
+        return plat.set_capturable(self.handle, capturable)
 
     def configure(self, font_size, placement):
         self.font_size, self.placement = font_size, placement
@@ -530,7 +452,7 @@ class Overlay:
             self.win.withdraw()
             return
         x, y, w, h = self.box
-        font_px = round(self.font_size * (user32.GetDpiForWindow(self.hwnd) or 96) / 72)
+        font_px = plat.font_px(self.handle, self.font_size)
         # In cover mode the box is at least as tall as the region, so the original can't peek out.
         img = render_subtitle(self.text, w, h if self.placement == "cover" else 0, font_px, self.background)
         height = img.height
@@ -539,9 +461,9 @@ class Overlay:
         self.label.configure(image=self.photo)
         self.win.geometry(f"{w}x{height}+{x}+{max(0, top)}")
         radius = max(8, font_px // 2)
-        user32.SetWindowRgn(self.hwnd, gdi32.CreateRoundRectRgn(0, 0, w + 1, height + 1, radius, radius), True)
         self.win.deiconify()
         self.win.lift()
+        plat.round_corners(self.handle, w, height, radius)
 
 
 class RegionPicker:
@@ -557,7 +479,7 @@ class RegionPicker:
         self.win.geometry(f"{vw}x{vh}+{vx}+{vy}")
         self.canvas = tk.Canvas(self.win, bg="black", highlightthickness=0, cursor="crosshair")
         self.canvas.pack(fill="both", expand=True)
-        self.canvas.create_text(vw // 2, 40, fill="white", font=("Segoe UI", 18, "bold"),
+        self.canvas.create_text(vw // 2, 40, fill="white", font=(plat.UI_FONT, 18, "bold"),
                                 text="Altyazı bölgesini fareyle sürükleyerek seçin  ·  Esc: iptal")
         if current:
             fx, fy, fw, fh = current
@@ -568,6 +490,7 @@ class RegionPicker:
         self.canvas.bind("<B1-Motion>", self._drag)
         self.canvas.bind("<ButtonRelease-1>", self._release)
         self.win.bind("<Escape>", lambda e: self.win.destroy())
+        plat.make_floating(self.win)
         self.win.focus_force()
         self.win.grab_set()
 
@@ -594,17 +517,11 @@ class RegionPicker:
 
 # ---------------------------------------------------------------- control panel
 
-def hotkey_listener(events):
-    """Global hotkeys need their own thread with a message loop."""
-    MOD = 0x0002 | 0x0001 | 0x4000  # Ctrl + Alt, no auto-repeat
-    keys = {HOTKEY_TOGGLE: 0x54, HOTKEY_REGION: 0x52, HOTKEY_HIDE: 0x48, HOTKEY_SNAP: 0x53}  # T, R, H, S
-    for hid, vk in keys.items():
-        if not user32.RegisterHotKey(None, hid, MOD, vk):
-            log(f"could not register hotkey {hid}")
-    msg = wt.MSG()
-    while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
-        if msg.message == 0x0312:  # WM_HOTKEY
-            events.put(("hotkey", msg.wParam))
+HOTKEY_LETTERS = {HOTKEY_TOGGLE: "T", HOTKEY_REGION: "R", HOTKEY_HIDE: "H", HOTKEY_SNAP: "S"}
+
+
+def hotkey_label(letter):
+    return f"{plat.HOTKEY_LABEL}+{letter}"
 
 
 class App:
@@ -619,7 +536,8 @@ class App:
         self.pipeline = None  # started once setup is complete
         self._build_ui()
         self._apply_profile()
-        threading.Thread(target=hotkey_listener, args=(self.events,), daemon=True).start()
+        threading.Thread(target=plat.hotkey_loop, daemon=True,
+                         args=(HOTKEY_LETTERS, lambda hid: self.events.put(("hotkey", hid)), log)).start()
         self.root.protocol("WM_DELETE_WINDOW", self.root.destroy)
         self.root.after(30, self._pump)
         # The installer starts us with --setup so the first run always walks through setup.
@@ -658,8 +576,8 @@ class App:
             if self.current_profile().get("region"):
                 self.set_active(True)
             else:
-                self.status_var.set("Hazır · oyunda Ctrl+Alt+R ile altyazı bölgesini seçin")
-            if self.cfg.get("auto_connect"):
+                self.status_var.set(f"Hazır · oyunda {hotkey_label('R')} ile altyazı bölgesini seçin")
+            if self.cfg.get("auto_connect") and "--no-connect" not in sys.argv:
                 self.connect()
 
     # PS5 connection
@@ -672,7 +590,7 @@ class App:
     def _connect_worker(self):
         cfg = self.cfg
         try:
-            if setup_steps.chiaki_running():
+            if plat.chiaki_running():
                 self.events.put(("conn", "chiaki-ng zaten açık"))
                 return
             if not cfg.get("ps5_nickname"):
@@ -691,9 +609,8 @@ class App:
             # chiaki-ng 1.9.9's `stream` command stalls on its host list without connecting, so
             # start it normally and let its own auto-connect (settings/auto_connect_mac, set to
             # this console) open the stream once discovery finds the PS5.
-            setup_steps.apply_chiaki_settings(cfg["ps5_nickname"])
-            subprocess.Popen([cfg["chiaki_path"], *cfg.get("chiaki_extra_args", [])],
-                             creationflags=subprocess.CREATE_NO_WINDOW)
+            plat.apply_chiaki_settings(cfg["ps5_nickname"])
+            plat.launch_chiaki(cfg["chiaki_path"], cfg.get("chiaki_extra_args", []))
         except Exception as e:
             log(f"connect failed: {e}")
             self.events.put(("conn", f"Bağlantı hatası: {e}"))
@@ -748,12 +665,12 @@ class App:
 
     # actions
     def pick_region(self):
-        hwnd = find_chiaki_window()
+        hwnd = plat.find_chiaki_window()
         if not hwnd:
             messagebox.showwarning("RemoteSub", "chiaki-ng penceresi bulunamadı. Önce PS5 yayınını açın.",
                                    parent=self.root)
             return
-        video = video_rect(client_rect(hwnd))
+        video = video_rect(plat.client_rect(hwnd))
         RegionPicker(self.root, video, self.current_profile().get("region"), self._region_chosen)
 
     def _region_chosen(self, region):
@@ -762,7 +679,7 @@ class App:
 
     def snapshot(self):
         """Save a screenshot of the chiaki-ng window with the translation overlay included."""
-        hwnd = find_chiaki_window()
+        hwnd = plat.find_chiaki_window()
         if not hwnd or self.pipeline is None:
             return
         # Pause OCR while the overlay is capturable, so it never reads our own text.
@@ -771,12 +688,10 @@ class App:
 
         def grab():
             try:
-                x, y, w, h = client_rect(hwnd)
-                with (mss.MSS() if hasattr(mss, "MSS") else mss.mss()) as grabber:
-                    shot = grabber.grab({"left": x, "top": y, "width": w, "height": h})
+                image = plat.grab_screen(plat.client_rect(hwnd))
                 os.makedirs(SHOTS_DIR, exist_ok=True)
                 path = os.path.join(SHOTS_DIR, time.strftime("%Y%m%d-%H%M%S") + ".png")
-                Image.frombytes("RGB", shot.size, shot.rgb).save(path)
+                image.save(path)
                 log(f"snapshot saved: {path}")
                 self.status_var.set(f"Görüntü kaydedildi: {os.path.basename(path)}")
             finally:
@@ -795,7 +710,8 @@ class App:
             self.pipeline.active.clear()
             self.overlay.hide()
             self.status_var.set("Durduruldu")
-        self.toggle_btn.configure(text="Durdur  (Ctrl+Alt+T)" if active else "Başlat  (Ctrl+Alt+T)")
+        label = "Durdur" if active else "Başlat"
+        self.toggle_btn.configure(text=f"{label}  ({hotkey_label('T')})")
 
     def _build_ui(self):
         top = ttk.Frame(self.root, padding=(10, 10, 10, 0))
@@ -819,7 +735,7 @@ class App:
         ttk.Button(f, text="Yeni", width=6, command=self._new_profile).grid(row=0, column=2)
         ttk.Button(f, text="Sil", width=5, command=self._delete_profile).grid(row=0, column=3, padx=(4, 0))
 
-        ttk.Button(f, text="Bölge seç  (Ctrl+Alt+R)", command=self.pick_region).grid(
+        ttk.Button(f, text=f"Bölge seç  ({hotkey_label('R')})", command=self.pick_region).grid(
             row=1, column=0, columnspan=2, sticky="we", pady=(8, 0))
         self.region_label = ttk.Label(f)
         self.region_label.grid(row=1, column=2, columnspan=2, sticky="w", padx=4, pady=(8, 0))
@@ -847,10 +763,10 @@ class App:
         self.src_var, self.dst_var, self.timing_var = tk.StringVar(), tk.StringVar(), tk.StringVar()
         ttk.Label(f, textvariable=self.src_var, wraplength=380, foreground="#777").grid(
             row=7, column=0, columnspan=4, sticky="w", pady=(6, 0))
-        ttk.Label(f, textvariable=self.dst_var, wraplength=380, font=("Segoe UI", 10, "bold")).grid(
+        ttk.Label(f, textvariable=self.dst_var, wraplength=380, font=(plat.UI_FONT, 10, "bold")).grid(
             row=8, column=0, columnspan=4, sticky="w")
         ttk.Label(f, textvariable=self.timing_var, foreground="#555").grid(row=9, column=0, columnspan=4, sticky="w")
-        self.toggle_btn.configure(text="Başlat  (Ctrl+Alt+T)")
+        self.toggle_btn.configure(text=f"Başlat  ({hotkey_label('T')})")
 
     def _pump(self):
         try:
