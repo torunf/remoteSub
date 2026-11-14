@@ -450,8 +450,36 @@ def _accessibility_trusted(prompt=False):
         return True
 
 
+def _other_window_titles_visible():
+    """macOS hides other apps' window titles from processes without Screen Recording access."""
+    me = os.getpid()
+    for info in _window_infos(Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements):
+        if info.get("kCGWindowOwnerPID") == me or info.get("kCGWindowLayer", 1) != 0:
+            continue
+        if str(info.get("kCGWindowOwnerName", "")) in ("Window Server", "Dock"):
+            continue
+        if info.get("kCGWindowName"):
+            return True
+    return False
+
+
+def screen_capture_allowed():
+    # CGPreflightScreenCaptureAccess kept answering False on macOS 27 after the user had allowed
+    # RemoteSub and relaunched it, so window titles serve as a second opinion.
+    preflight = bool(Quartz.CGPreflightScreenCaptureAccess())
+    titles = _other_window_titles_visible()
+    try:
+        os.makedirs(APP_DIR, exist_ok=True)
+        with open(os.path.join(APP_DIR, "log.txt"), "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} screen capture check: "
+                    f"preflight={preflight} other_window_titles={titles}\n")
+    except OSError:
+        pass
+    return preflight or titles
+
+
 def permissions_ok():
-    if not Quartz.CGPreflightScreenCaptureAccess():
+    if not screen_capture_allowed():
         return False, "Ekran Kaydı izni yok"
     if not _accessibility_trusted():
         return True, "Ekran Kaydı (kısayollar için Erişilebilirlik izni yok)"
@@ -466,7 +494,7 @@ def request_permissions(report):
            "Kısayollar için Erişilebilirlik listesinde de aç. macOS izni çoğu zaman ancak uygulama "
            "yeniden açılınca tanır: izni verdikten sonra RemoteSub'ı kapatıp yeniden aç.", None, help_text=True)
     for _ in range(120):
-        if Quartz.CGPreflightScreenCaptureAccess():
+        if screen_capture_allowed():
             return
         time.sleep(1)
     raise RuntimeError("Ekran Kaydı izni henüz görünmüyor; izni verdiysen RemoteSub'ı yeniden aç")
