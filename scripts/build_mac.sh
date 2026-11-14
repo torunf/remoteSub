@@ -10,7 +10,7 @@ python3 -m pip install -q -r requirements.txt
 
 python3 -m PyInstaller --noconfirm --clean --windowed --name RemoteSub --paths src \
     --osx-bundle-identifier com.torunf.remotesub \
-    --exclude-module platform_win --exclude-module oneocr --exclude-module rapidocr \
+    --collect-data certifi \n    --exclude-module platform_win --exclude-module oneocr --exclude-module rapidocr \
     --distpath dist --workpath build src/remotesub.py
 
 plist=dist/RemoteSub.app/Contents/Info.plist

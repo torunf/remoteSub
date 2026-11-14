@@ -16,7 +16,7 @@ if ($LASTEXITCODE) { throw "pip install failed" }
 $exclude = 'platform_mac', 'torch', 'torchvision', 'tensorrt', 'paddle', 'openvino', 'MNN', 'matplotlib', 'scipy', 'pandas', 'IPython' |
     ForEach-Object { '--exclude-module', $_ }
 python -m PyInstaller --noconfirm --clean --windowed --name RemoteSub --paths src `
-    --collect-all rapidocr --hidden-import oneocr @exclude `
+    --collect-all rapidocr --collect-data certifi --hidden-import oneocr @exclude `
     --distpath dist --workpath build src\remotesub.py
 if ($LASTEXITCODE) { throw "PyInstaller failed" }
 
