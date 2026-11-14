@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Used only when the upstream chiaki-ng build is not notarized and we re-sign it
+     with RemoteSub's Developer ID so the installer package can be notarized. -->
+<plist version="1.0">
+<dict>
+    <!-- Qt, MoltenVK and FFmpeg code paths that generate code at runtime. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <!-- Bundled frameworks and plugins from different builds. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <!-- chiaki-ng's microphone passthrough to the PS5. -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+</dict>
+</plist>

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- RemoteSub under the hardened runtime (required for notarization). -->
+<plist version="1.0">
+<dict>
+    <!-- ctypes/libffi and PyObjC create executable trampolines at runtime. -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <!-- The bundled Python loads its extension modules from inside the app. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <!-- Quitting chiaki-ng through AppleScript before changing its settings. -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+</dict>
+</plist>
