@@ -1,5 +1,6 @@
 pillow==12.2.0
 certifi>=2024.2.2
+rapidfuzz==3.14.6
 pyinstaller==6.22.3
 
 # Windows: screen capture and OCR (OneOCR from the Snipping Tool, RapidOCR as fallback)

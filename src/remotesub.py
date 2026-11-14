@@ -19,12 +19,13 @@ import threading
 import time
 import tkinter as tk
 import urllib.request
-from tkinter import messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageTk
 
 import setup_steps
 import updater
+from dictionary import Dictionary
 from ocr_engine import OcrEngine
 
 try:
@@ -43,6 +44,7 @@ APP_DIR = plat.APP_DIR
 CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 LOG_PATH = os.path.join(APP_DIR, "log.txt")
 SHOTS_DIR = os.path.join(APP_DIR, "shots")
+DICTIONARY_DIR = os.path.join(APP_DIR, "dictionaries")
 # While this file exists, the next translation of a multi-line subtitle is snapshotted.
 SNAP_MULTILINE_FLAG = os.path.join(APP_DIR, "snap_multiline.flag")
 
@@ -181,6 +183,7 @@ class Translator:
         self.model = cfg["model"]
         self.source, self.target = cfg["source"], cfg["target"]
         self.cache = {}
+        self.dictionaries = {}  # file name -> Dictionary, loaded on first use
 
     def _generate(self, payload):
         req = urllib.request.Request(self.url, json.dumps(payload).encode("utf-8"),
@@ -194,9 +197,27 @@ class Translator:
         except Exception as e:
             log(f"warm-up failed: {e}")
 
-    def translate(self, text):
+    def dictionary(self, name):
+        if not name:
+            return None
+        if name not in self.dictionaries:
+            try:
+                self.dictionaries[name] = Dictionary(os.path.join(DICTIONARY_DIR, name))
+                log(f"dictionary {name}: {len(self.dictionaries[name])} lines")
+            except Exception as e:
+                log(f"dictionary {name} unavailable: {e}")
+                self.dictionaries[name] = None
+        return self.dictionaries[name]
+
+    def translate(self, text, dictionary_name=None):
+        """(translation, where it came from): "sözlük", "önbellek" or "model"."""
+        dictionary = self.dictionary(dictionary_name)
+        if dictionary is not None:
+            found = dictionary.lookup(text)
+            if found:
+                return found, "sözlük"
         if text in self.cache:
-            return self.cache[text]
+            return self.cache[text], "önbellek"
         src = LANG_NAMES.get(self.source, self.source)
         tgt = LANG_NAMES.get(self.target, self.target)
         # TranslateGemma is trained on this exact prompt shape (note the two blank lines).
@@ -221,7 +242,7 @@ class Translator:
         if len(out) > 1.8 * len(text) + 15:
             out = min(out, run(0.4), key=len)
         self.cache[text] = out
-        return out
+        return out, "model"
 
 
 # ---------------------------------------------------------------- capture → OCR → translate loop
@@ -323,7 +344,7 @@ class Pipeline(threading.Thread):
                 if candidate_reads >= CONFIRM_READS:
                     t_tr = time.perf_counter()
                     try:
-                        translated = self.translator.translate(candidate)
+                        translated, origin = self.translator.translate(candidate, profile.get("dictionary"))
                     except Exception as e:
                         self.post("status", f"Çeviri hatası: {e}")
                         log(f"translation error: {e}")
@@ -331,7 +352,7 @@ class Pipeline(threading.Thread):
                         continue
                     done = time.perf_counter()
                     timing = (f"ilk görülme→ekranda {1000 * (done - first_seen):.0f} ms "
-                              f"(OCR {ocr_ms:.0f} ms, çeviri {1000 * (done - t_tr):.0f} ms)")
+                              f"(OCR {ocr_ms:.0f} ms, çeviri {1000 * (done - t_tr):.0f} ms, {origin})")
                     self.post("show", candidate, translated, timing, n_lines, frame)
                     log(f"{timing} | {candidate!r} -> {translated!r}")
                     shown_src, candidate, candidate_reads = candidate, "", 0
@@ -696,6 +717,7 @@ class App:
         self.font_var.set(p.get("font_size", 20))
         self.placement_var.set(PLACEMENTS[p.get("placement", "cover")])
         self.region_label.configure(text="Bölge: kayıtlı" if p.get("region") else "Bölge: seçilmedi")
+        self.dictionary_var.set(f"Sözlük: {p['dictionary']}" if p.get("dictionary") else "Sözlük: yok")
         self.overlay.configure(p.get("font_size", 20), p.get("placement", "cover"))
 
     def _select_profile(self, _=None):
@@ -725,6 +747,27 @@ class App:
             self.cfg["last_profile"] = next(iter(self.cfg["profiles"]))
             save_config(self.cfg)
             self._apply_profile()
+
+    def choose_dictionary(self):
+        """Attach a pre-translated dictionary (JSON: source line -> translation) to this profile."""
+        path = filedialog.askopenfilename(parent=self.root, title="Sözlük dosyası (JSON)",
+                                          filetypes=[("JSON", "*.json"), ("Tümü", "*.*")])
+        if not path:
+            return
+        try:
+            count = len(Dictionary(path))
+        except Exception as e:
+            messagebox.showerror("Sözlük", f"Dosya okunamadı: {e}", parent=self.root)
+            return
+        os.makedirs(DICTIONARY_DIR, exist_ok=True)
+        name = os.path.basename(path)
+        target = os.path.join(DICTIONARY_DIR, name)
+        if os.path.abspath(path) != os.path.abspath(target):
+            shutil.copy2(path, target)
+        if self.pipeline:
+            self.pipeline.translator.dictionaries.pop(name, None)  # reload a replaced file
+        self._update_profile(dictionary=name)
+        self.status_var.set(f"Sözlük yüklendi: {count} satır")
 
     # actions
     def pick_region(self):
@@ -823,15 +866,20 @@ class App:
         placement.bind("<<ComboboxSelected>>", lambda e: self._update_profile(
             placement=next(k for k, v in PLACEMENTS.items() if v == self.placement_var.get())))
 
-        ttk.Separator(f).grid(row=5, column=0, columnspan=4, sticky="we", pady=8)
+        self.dictionary_var = tk.StringVar()
+        ttk.Label(f, textvariable=self.dictionary_var).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ttk.Button(f, text="Sözlük…", command=self.choose_dictionary).grid(
+            row=5, column=2, columnspan=2, sticky="e", pady=(4, 0))
+
+        ttk.Separator(f).grid(row=6, column=0, columnspan=4, sticky="we", pady=8)
         self.status_var = tk.StringVar(value="Durduruldu")
-        ttk.Label(f, textvariable=self.status_var, foreground="#555").grid(row=6, column=0, columnspan=4, sticky="w")
+        ttk.Label(f, textvariable=self.status_var, foreground="#555").grid(row=7, column=0, columnspan=4, sticky="w")
         self.src_var, self.dst_var, self.timing_var = tk.StringVar(), tk.StringVar(), tk.StringVar()
         ttk.Label(f, textvariable=self.src_var, wraplength=380, foreground="#777").grid(
-            row=7, column=0, columnspan=4, sticky="w", pady=(6, 0))
+            row=8, column=0, columnspan=4, sticky="w", pady=(6, 0))
         ttk.Label(f, textvariable=self.dst_var, wraplength=380, font=(plat.UI_FONT, 10, "bold")).grid(
-            row=8, column=0, columnspan=4, sticky="w")
-        ttk.Label(f, textvariable=self.timing_var, foreground="#555").grid(row=9, column=0, columnspan=4, sticky="w")
+            row=9, column=0, columnspan=4, sticky="w")
+        ttk.Label(f, textvariable=self.timing_var, foreground="#555").grid(row=10, column=0, columnspan=4, sticky="w")
         self.toggle_btn.configure(text=f"Başlat  ({hotkey_label('T')})")
 
     def _pump(self):
