@@ -198,16 +198,29 @@ class Translator:
             log(f"warm-up failed: {e}")
 
     def dictionary(self, name):
+        """The profile's dictionary, reloaded when its file changes (it may be growing while we play)."""
         if not name:
             return None
-        if name not in self.dictionaries:
-            try:
-                self.dictionaries[name] = Dictionary(os.path.join(DICTIONARY_DIR, name))
-                log(f"dictionary {name}: {len(self.dictionaries[name])} lines")
-            except Exception as e:
-                log(f"dictionary {name} unavailable: {e}")
-                self.dictionaries[name] = None
-        return self.dictionaries[name]
+        path = os.path.join(DICTIONARY_DIR, name)
+        cached = self.dictionaries.get(name)
+        now = time.monotonic()
+        if cached and now < cached["next_check"]:
+            return cached["dictionary"]
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            mtime = None
+        if cached and cached["mtime"] == mtime:
+            cached["next_check"] = now + 30
+            return cached["dictionary"]
+        try:
+            dictionary = Dictionary(path)
+            log(f"dictionary {name}: {len(dictionary)} lines")
+        except Exception as e:
+            log(f"dictionary {name} unavailable: {e}")
+            dictionary = cached["dictionary"] if cached else None
+        self.dictionaries[name] = {"dictionary": dictionary, "mtime": mtime, "next_check": now + 30}
+        return dictionary
 
     def translate(self, text, dictionary_name=None):
         """(translation, where it came from): "sözlük", "önbellek" or "model"."""
