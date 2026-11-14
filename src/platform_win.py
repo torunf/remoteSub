@@ -11,7 +11,7 @@ import time
 import winreg
 
 import mss
-from PIL import Image
+from PIL import Image, ImageChops
 
 from netutil import download, github_latest_asset
 
@@ -160,8 +160,68 @@ def set_capturable(hwnd, capturable):
     return user32.SetWindowDisplayAffinity(hwnd, 0 if capturable else WDA_EXCLUDEFROMCAPTURE)
 
 
-def round_corners(hwnd, width, height, radius):
-    user32.SetWindowRgn(hwnd, gdi32.CreateRoundRectRgn(0, 0, width + 1, height + 1, radius, radius), True)
+OVERLAY_BG = "#18181c"
+
+
+class _BitmapInfoHeader(ctypes.Structure):
+    _fields_ = [("biSize", wt.DWORD), ("biWidth", wt.LONG), ("biHeight", wt.LONG), ("biPlanes", wt.WORD),
+                ("biBitCount", wt.WORD), ("biCompression", wt.DWORD), ("biSizeImage", wt.DWORD),
+                ("biXPelsPerMeter", wt.LONG), ("biYPelsPerMeter", wt.LONG), ("biClrUsed", wt.DWORD),
+                ("biClrImportant", wt.DWORD)]
+
+
+class _BlendFunction(ctypes.Structure):
+    _fields_ = [("BlendOp", ctypes.c_ubyte), ("BlendFlags", ctypes.c_ubyte),
+                ("SourceConstantAlpha", ctypes.c_ubyte), ("AlphaFormat", ctypes.c_ubyte)]
+
+
+user32.GetDC.restype = wt.HDC
+user32.GetDC.argtypes = [wt.HWND]
+user32.ReleaseDC.argtypes = [wt.HWND, wt.HDC]
+gdi32.CreateCompatibleDC.restype = wt.HDC
+gdi32.CreateCompatibleDC.argtypes = [wt.HDC]
+gdi32.CreateDIBSection.restype = wt.HBITMAP
+gdi32.CreateDIBSection.argtypes = [wt.HDC, ctypes.c_void_p, wt.UINT, ctypes.POINTER(ctypes.c_void_p),
+                                   wt.HANDLE, wt.DWORD]
+gdi32.SelectObject.restype = wt.HGDIOBJ
+gdi32.SelectObject.argtypes = [wt.HDC, wt.HGDIOBJ]
+gdi32.DeleteObject.argtypes = [wt.HGDIOBJ]
+gdi32.DeleteDC.argtypes = [wt.HDC]
+user32.UpdateLayeredWindow.argtypes = [wt.HWND, wt.HDC, ctypes.POINTER(wt.POINT), ctypes.POINTER(wt.SIZE),
+                                       wt.HDC, ctypes.POINTER(wt.POINT), wt.DWORD,
+                                       ctypes.POINTER(_BlendFunction), wt.DWORD]
+
+
+def present_overlay(win, label, hwnd, img, x, y):
+    """Show an RGBA image as the overlay window's whole content (per-pixel alpha)."""
+    width, height = img.size
+    win.geometry(f"{width}x{height}+{x}+{y}")
+    win.deiconify()
+    win.lift()
+    # Tk applies SetLayeredWindowAttributes to layered windows when it maps them, after which
+    # UpdateLayeredWindow fails with ERROR_INVALID_PARAMETER; toggling the style resets that.
+    style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+    user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style & ~WS_EX_LAYERED)
+    user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED)
+    # Windows wants premultiplied BGRA, top-down.
+    r, g, b, a = img.convert("RGBA").split()
+    r, g, b = (ImageChops.multiply(c, a) for c in (r, g, b))
+    pixels = Image.merge("RGBA", (b, g, r, a)).tobytes()
+    header = _BitmapInfoHeader(ctypes.sizeof(_BitmapInfoHeader), width, -height, 1, 32, 0, 0, 0, 0, 0, 0)
+    screen = user32.GetDC(None)
+    memory = gdi32.CreateCompatibleDC(screen)
+    bits = ctypes.c_void_p()
+    bitmap = gdi32.CreateDIBSection(memory, ctypes.byref(header), 0, ctypes.byref(bits), None, 0)
+    ctypes.memmove(bits, pixels, len(pixels))
+    previous = gdi32.SelectObject(memory, bitmap)
+    blend = _BlendFunction(0, 0, 255, 1)  # AC_SRC_OVER, AC_SRC_ALPHA
+    user32.UpdateLayeredWindow(hwnd, screen, ctypes.byref(wt.POINT(x, y)), ctypes.byref(wt.SIZE(width, height)),
+                               memory, ctypes.byref(wt.POINT(0, 0)), 0, ctypes.byref(blend), 2)  # ULW_ALPHA
+    gdi32.SelectObject(memory, previous)
+    gdi32.DeleteObject(bitmap)
+    gdi32.DeleteDC(memory)
+    user32.ReleaseDC(None, screen)
+    return None
 
 
 def font_px(hwnd, points):

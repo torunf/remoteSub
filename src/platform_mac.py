@@ -20,7 +20,7 @@ import time
 
 import AppKit
 import Quartz
-from PIL import Image
+from PIL import Image, ImageTk
 
 from netutil import download, github_latest_asset
 
@@ -189,6 +189,7 @@ def _nswindow(win):
 
 
 def prepare_overlay(win):
+    win.wm_attributes("-transparent", True)
     ns = _nswindow(win)
     if ns is None:
         return None
@@ -224,14 +225,19 @@ def set_capturable(ns, capturable):
     return True
 
 
-def round_corners(ns, width, height, radius):
-    if ns is None:
-        return
-    ns.setIgnoresMouseEvents_(True)  # Tk may reset it when the window is shown again
-    view = ns.contentView()
-    view.setWantsLayer_(True)
-    view.layer().setCornerRadius_(radius)
-    view.layer().setMasksToBounds_(True)
+OVERLAY_BG = "systemTransparent"  # Tk on macOS: lets the image's alpha show the desktop through
+
+
+def present_overlay(win, label, ns, img, x, y):
+    """Show an RGBA image as the overlay window's content (the window itself is transparent)."""
+    photo = ImageTk.PhotoImage(img)
+    label.configure(image=photo)
+    win.geometry(f"{img.width}x{img.height}+{x}+{y}")
+    win.deiconify()
+    win.lift()
+    if ns is not None:
+        ns.setIgnoresMouseEvents_(True)  # Tk may reset it when the window is shown again
+    return photo  # the caller keeps it alive
 
 
 def font_px(ns, points):

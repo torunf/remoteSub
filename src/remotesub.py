@@ -22,7 +22,7 @@ import urllib.request
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import sv_ttk
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageTk
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 import setup_steps
 import updater
@@ -50,7 +50,8 @@ FONT_DIR = os.path.join(APP_DIR, "fonts")
 # While this file exists, the next translation of a multi-line subtitle is snapshotted.
 SNAP_MULTILINE_FLAG = os.path.join(APP_DIR, "snap_multiline.flag")
 
-DEFAULT_PROFILE = {"region": None, "font_size": 20, "placement": "cover", "font_file": None}
+DEFAULT_PROFILE = {"region": None, "font_size": 20, "placement": "cover", "font_file": None,
+                   "background": "blur", "dim_percent": 55}
 # Machine-specific values start empty; the setup steps (setup_steps.py) fill them in.
 DEFAULT_CONFIG = {
     "ollama_url": "",
@@ -67,6 +68,7 @@ DEFAULT_CONFIG = {
 }
 LANG_NAMES = {"en": "English", "tr": "Turkish", "de": "German", "fr": "French", "es": "Spanish",
               "it": "Italian", "ja": "Japanese", "ko": "Korean", "ru": "Russian", "zh": "Chinese"}
+BACKGROUNDS = {"blur": "Buzlu cam", "dim": "Şeffaf, karartılmış"}
 MUTED = "#9aa0a6"  # secondary text on the dark theme
 PLACEMENTS = {"cover": "Bölgeyi kapla", "above": "Bölgenin üstünde", "match": "İngilizce yazının yerine"}
 
@@ -451,78 +453,89 @@ def layout_subtitle(text, width, font_px, font_file=None, tight=False):
     return font, pad_x, pad_y, line_h, wrap_balanced(text, font, max(10, width - 2 * pad_x))
 
 
-def render_subtitle(text, width, min_height, font_px, background, font_file=None, tight=False):
-    """Text with a soft shadow on a blurred, darkened copy of the game frame behind it."""
+def render_subtitle(text, width, min_height, font_px, background, font_file=None, tight=False,
+                    bg_mode="blur", dim_percent=55):
+    """RGBA image: text with a soft shadow on either a blurred, darkened copy of the game frame
+    ("blur") or the live game showing through, darkened by dim_percent ("dim"). Corners are
+    rounded in the alpha channel."""
     font, pad_x, pad_y, line_h, lines = layout_subtitle(text, width, font_px, font_file, tight)
     height = max(min_height, line_h * len(lines) + 2 * pad_y)
+    size = (width, height)
 
-    if background is not None:
+    if bg_mode == "dim":
+        img = Image.new("RGBA", size, (8, 8, 12, round(255 * min(max(dim_percent, 0), 100) / 100)))
+    elif background is not None:
         # Blur at quarter size: cheap, and strong enough that the original text is unreadable.
         small = background.convert("RGB").resize((max(1, width // 4), max(1, height // 4)), Image.BILINEAR)
         small = small.filter(ImageFilter.GaussianBlur(5))
-        img = small.resize((width, height), Image.BILINEAR)
-        img = Image.blend(img, Image.new("RGB", img.size, (12, 12, 16)), 0.42)
+        img = Image.blend(small.resize(size, Image.BILINEAR), Image.new("RGB", size, (12, 12, 16)), 0.42)
+        img = img.convert("RGBA")
     else:
-        img = Image.new("RGB", (width, height), (24, 24, 28))
+        img = Image.new("RGBA", size, (24, 24, 28, 255))
 
-    shadow = Image.new("L", img.size, 0)
-    sd = ImageDraw.Draw(shadow)
     top = (height - line_h * len(lines)) // 2
     offset = max(1, font_px // 14)
+    shadow = Image.new("L", size, 0)
+    sd = ImageDraw.Draw(shadow)
     for i, line in enumerate(lines):
         x = (width - font.getlength(line)) / 2
         sd.text((x + offset, top + i * line_h + offset), line, font=font, fill=210)
     shadow = shadow.filter(ImageFilter.GaussianBlur(max(1, font_px // 9)))
-    img.paste((0, 0, 0), mask=shadow)
+    img = Image.alpha_composite(img, Image.merge("RGBA", (*Image.new("RGB", size).split(), shadow)))
 
-    draw = ImageDraw.Draw(img)
+    text_layer = Image.new("RGBA", size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(text_layer)
     for i, line in enumerate(lines):
         x = (width - font.getlength(line)) / 2
-        draw.text((x, top + i * line_h), line, font=font, fill=TEXT_COLOR)
+        draw.text((x, top + i * line_h), line, font=font, fill=(*TEXT_COLOR, 255))
+    img = Image.alpha_composite(img, text_layer)
+
+    corners = Image.new("L", size, 0)
+    ImageDraw.Draw(corners).rounded_rectangle((0, 0, width - 1, height - 1), max(8, font_px // 2), fill=255)
+    img.putalpha(ImageChops.multiply(img.getchannel("A"), corners))
     return img
 
 
-def fit_over_text(text, region, text_rel, font_px, font_file, frame):
+def fit_over_text(text, region, text_rel, font_px, font_file, frame, bg_mode="blur", dim_percent=55):
     """Place the translation over the English text's own box: (image, x, y).
 
-    Turkish usually runs longer than the English, so the font first shrinks (to 70%) and the box
-    then widens around its centre, never past the region."""
+    The font size stays as chosen. Turkish usually runs longer than the English, so the box first
+    widens around its centre (never past the region); if the text still doesn't fit in the
+    English text's height, it grows upwards from the same bottom line."""
     rx, ry, rw, rh = region
     tx, ty, tw, th = text_rel
     margin_x, margin_y = round(font_px * 0.5), round(font_px * 0.25)
-    box_w, box_h = round(tw) + 2 * margin_x, round(th) + 2 * margin_y
+    box_w, box_h = min(round(tw) + 2 * margin_x, rw), round(th) + 2 * margin_y
     centre_x, bottom = rx + tx + tw / 2, ry + ty + th + margin_y
-    choice = None
-    for width in (box_w, round(box_w * 1.3), rw):
-        width = min(max(width, box_w), rw)
-        for px in range(font_px, max(9, round(font_px * 0.7)) - 1, -1):
-            _, _, pad_y, line_h, lines = layout_subtitle(text, width, px, font_file, tight=True)
-            if line_h * len(lines) + 2 * pad_y <= box_h:
-                choice = (width, px)
-                break
-        if choice:
-            break
-    width, px = choice or (rw, max(9, round(font_px * 0.7)))
+
+    def needed_height(width):
+        _, _, pad_y, line_h, lines = layout_subtitle(text, width, font_px, font_file, tight=True)
+        return line_h * len(lines) + 2 * pad_y
+
+    step = max(16, box_w // 10)
+    width = box_w
+    while needed_height(width) > box_h and width < rw:
+        width = min(width + step, rw)
+    height = max(box_h, needed_height(width))
     left = round(min(max(centre_x - width / 2, rx), rx + rw - width))
 
     background = None
     if frame is not None:
         sx, sy = frame.width / rw, frame.height / rh
-        crop = ((left - rx) * sx, max(0, (bottom - box_h - ry) * sy), (left - rx + width) * sx, (bottom - ry) * sy)
+        crop = ((left - rx) * sx, max(0, (bottom - height - ry) * sy), (left - rx + width) * sx, (bottom - ry) * sy)
         background = frame.crop(tuple(round(v) for v in crop))
-    img = render_subtitle(text, width, box_h, px, background, font_file, tight=True)
+    img = render_subtitle(text, width, box_h, font_px, background, font_file, tight=True,
+                          bg_mode=bg_mode, dim_percent=dim_percent)
     return img, left, round(bottom - img.height)
 
 
 class Overlay:
-    BG = "#18181c"
-
     def __init__(self, root):
         self.win = tk.Toplevel(root)
         self.win.overrideredirect(True)
         self.win.attributes("-topmost", True)
-        self.win.configure(bg=self.BG)
-        self.label = tk.Label(self.win, bg=self.BG, bd=0, highlightthickness=0)
+        self.win.configure(bg=plat.OVERLAY_BG)
+        self.label = tk.Label(self.win, bg=plat.OVERLAY_BG, bd=0, highlightthickness=0)
         self.label.pack(fill="both", expand=True)
         self.photo = None
         self.background = None
@@ -535,12 +548,14 @@ class Overlay:
         self.text = ""
         self.hidden_by_user = False
         self.font_size, self.placement, self.font_file = 20, "cover", None
+        self.bg_mode, self.dim_percent = "blur", 55
 
     def set_capturable(self, capturable):
         return plat.set_capturable(self.handle, capturable)
 
-    def configure(self, font_size, placement, font_file=None):
+    def configure(self, font_size, placement, font_file=None, bg_mode="blur", dim_percent=55):
         self.font_size, self.placement, self.font_file = font_size, placement, font_file
+        self.bg_mode, self.dim_percent = bg_mode, dim_percent
         self._place()
 
     def move(self, box):
@@ -567,20 +582,16 @@ class Overlay:
         font_px = plat.font_px(self.handle, self.font_size)
         if self.placement == "match" and self.text_rel:
             img, left, top = fit_over_text(self.text, self.box, self.text_rel, font_px, self.font_file,
-                                           self.background)
+                                           self.background, self.bg_mode, self.dim_percent)
         else:
             # In cover mode the box is at least as tall as the region, so the original can't peek out.
             img = render_subtitle(self.text, w, h if self.placement == "cover" else 0, font_px,
-                                  self.background, self.font_file)
+                                  self.background, self.font_file, bg_mode=self.bg_mode,
+                                  dim_percent=self.dim_percent)
             left = x
             top = y + h - img.height if self.placement == "cover" else y - img.height - 6
-        self.photo = ImageTk.PhotoImage(img)
-        self.label.configure(image=self.photo)
-        self.win.geometry(f"{img.width}x{img.height}+{left}+{max(0, top)}")
-        radius = max(8, font_px // 2)
-        self.win.deiconify()
-        self.win.lift()
-        plat.round_corners(self.handle, img.width, img.height, radius)
+        # Per-pixel alpha (rounded corners, a see-through background) needs platform drawing.
+        self.photo = plat.present_overlay(self.win, self.label, self.handle, img, left, max(0, top))
 
 
 class RegionPicker:
@@ -812,7 +823,12 @@ class App:
         self.dictionary_var.set(p["dictionary"] if p.get("dictionary") else "yok · her satır modele gider")
         font_file = self.profile_font_path(p)
         self.typeface_var.set(os.path.splitext(os.path.basename(font_file))[0] if font_file else "Sistem yazı tipi")
-        self.overlay.configure(p.get("font_size", 20), p.get("placement", "cover"), font_file)
+        self.background_var.set(BACKGROUNDS[p.get("background", "blur")])
+        self.dim_var.set(p.get("dim_percent", 55))
+        self.dim_label.configure(text=f"%{p.get('dim_percent', 55)}")
+        self.dim_scale.state(["!disabled"] if p.get("background") == "dim" else ["disabled"])
+        self.overlay.configure(p.get("font_size", 20), p.get("placement", "cover"), font_file,
+                               p.get("background", "blur"), p.get("dim_percent", 55))
 
     def _select_profile(self, _=None):
         self.cfg["last_profile"] = self.profile_var.get()
@@ -1022,6 +1038,24 @@ class App:
             row=2, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
         ttk.Button(look, text="Seç…", command=self.choose_font).grid(row=2, column=2, pady=(8, 0))
         ttk.Button(look, text="Varsayılan", command=self.reset_font).grid(row=2, column=3, padx=(6, 0), pady=(8, 0))
+
+        ttk.Label(look, text="Arka plan").grid(row=3, column=0, sticky="w", pady=(8, 0))
+        self.background_var = tk.StringVar()
+        background = ttk.Combobox(look, textvariable=self.background_var, state="readonly",
+                                  values=list(BACKGROUNDS.values()))
+        background.grid(row=3, column=1, columnspan=3, sticky="we", padx=(8, 0), pady=(8, 0))
+        background.bind("<<ComboboxSelected>>", lambda e: self._update_profile(
+            background=next(k for k, v in BACKGROUNDS.items() if v == self.background_var.get())))
+
+        ttk.Label(look, text="Karartma").grid(row=4, column=0, sticky="w", pady=(8, 0))
+        self.dim_var = tk.IntVar(value=55)
+        self.dim_scale = ttk.Scale(look, from_=0, to=90, variable=self.dim_var,
+                                   command=lambda v: self.dim_label.configure(text=f"%{round(float(v))}"))
+        self.dim_scale.grid(row=4, column=1, columnspan=2, sticky="we", padx=(8, 0), pady=(8, 0))
+        # Re-render only once the slider is released, not on every pixel of the drag.
+        self.dim_scale.bind("<ButtonRelease-1>", lambda e: self._update_profile(dim_percent=round(self.dim_var.get())))
+        self.dim_label = ttk.Label(look, text="%55", style="Muted.TLabel", width=4)
+        self.dim_label.grid(row=4, column=3, sticky="e", pady=(8, 0))
 
         self.toggle_btn = ttk.Button(outer, state="disabled", style="Big.Accent.TButton",
                                      command=lambda: self.set_active(not self.pipeline.active.is_set()))
