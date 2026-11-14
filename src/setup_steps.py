@@ -15,6 +15,7 @@ import urllib.request
 from tkinter import ttk
 
 import ocr_engine
+from i18n import _
 
 if sys.platform == "darwin":
     import platform_mac as plat
@@ -22,12 +23,12 @@ else:
     import platform_win as plat
 
 PAIRING_HELP = (
-    "PS5'i chiaki-ng ile bir kez eşleştirmek gerekiyor:\n"
-    "1. PS5: Ayarlar → Sistem → Uzaktan Oynatma → Uzaktan Oynatmayı Etkinleştir.\n"
-    "2. Açılan chiaki-ng penceresinde PS5'ine tıkla. PSN hesabınla giriş yapman istenir; "
-    "giriş yapınca hesap kimliği kendiliğinden dolar.\n"
-    "3. PS5: Ayarlar → Sistem → Uzaktan Oynatma → Cihazı Bağla. Çıkan 8 haneli kodu chiaki-ng'ye gir.\n"
-    "Eşleşme bitince bu pencere kendiliğinden devam eder."
+    "Pair the PS5 with chiaki-ng once:\n"
+    "1. PS5: Settings → System → Remote Play → Enable Remote Play.\n"
+    "2. In the chiaki-ng window that opens, click your PS5. Sign in with your PSN account when asked; "
+    "your account ID is filled in for you.\n"
+    "3. PS5: Settings → System → Remote Play → Pair Device. Enter the 8-digit code shown into chiaki-ng.\n"
+    "This window carries on by itself once pairing is done."
 )
 
 
@@ -60,7 +61,7 @@ def find_ollama_url():
 
 def start_ollama():
     plat.launch_ollama()
-    for _ in range(60):
+    for _attempt in range(60):
         url = find_ollama_url()
         if url:
             return url
@@ -92,7 +93,7 @@ def pull_model(url, model, report):
                 raise RuntimeError(msg["error"])
             total, done = msg.get("total"), msg.get("completed")
             if total and done:
-                report(f"Model indiriliyor… {done >> 20} / {total >> 20} MB", done / total)
+                report(_("Downloading the model… {done} / {total} MB", done=done >> 20, total=total >> 20), done / total)
             else:
                 report(msg.get("status", ""), None)
 
@@ -118,18 +119,18 @@ def build_steps(cfg, app_dir):
         path = plat.find_chiaki()
         if path:
             cfg["chiaki_path"] = path
-            return True, "Kurulu"
-        return False, "Kurulu değil"
+            return True, _("Installed")
+        return False, _("Not installed")
 
     def fix_chiaki(report):
         plat.install_chiaki(report)
         if not plat.find_chiaki():
-            raise RuntimeError("chiaki-ng kurulamadı")
+            raise RuntimeError(_("Couldn't install chiaki-ng"))
 
     def check_pairing():
         hosts = plat.chiaki_hosts()
         if not hosts:
-            return False, "PS5 eşleştirilmedi"
+            return False, _("PS5 not paired")
         if cfg.get("ps5_nickname") not in [h["nickname"] for h in hosts]:
             cfg["ps5_nickname"] = hosts[0]["nickname"]
         return True, cfg["ps5_nickname"]
@@ -138,57 +139,57 @@ def build_steps(cfg, app_dir):
         if not plat.chiaki_running():
             plat.apply_chiaki_settings(None)  # decoder default before the first stream
             plat.launch_chiaki(cfg["chiaki_path"])
-        report(PAIRING_HELP, None, help_text=True)
+        report(_(PAIRING_HELP), None, help_text=True)
         while not plat.chiaki_hosts():
             time.sleep(2)
 
     def check_chiaki_settings():
         if not cfg.get("ps5_nickname"):
-            return False, "Önce PS5 eşleştirilmeli"
+            return False, _("Pair the PS5 first")
         if plat.chiaki_settings_ok(cfg["ps5_nickname"]):
             return True, plat.CHIAKI_SETTINGS_SUMMARY
-        return False, "Ayarlanmadı"
+        return False, _("Not set")
 
     def fix_chiaki_settings(report):
         if not cfg.get("ps5_nickname"):
-            raise RuntimeError("Önce PS5 eşleştirilmeli")
+            raise RuntimeError(_("Pair the PS5 first"))
         if plat.chiaki_running():
-            report("chiaki-ng ayarlar için kapatılıyor…", None)
+            report(_("Closing chiaki-ng to change its settings…"), None)
             plat.close_chiaki()
         plat.apply_chiaki_settings(cfg["ps5_nickname"])
         if not plat.chiaki_settings_ok(cfg["ps5_nickname"]):
-            raise RuntimeError("chiaki-ng ayarları yazılamadı")
+            raise RuntimeError(_("Couldn't write chiaki-ng's settings"))
 
     def check_ollama():
         url = find_ollama_url()
         if url:
             cfg["ollama_url"] = url
-            return True, f"Çalışıyor ({url.split('//')[1]})"
-        return False, "Kurulu, çalışmıyor" if plat.ollama_installed() else "Kurulu değil"
+            return True, _("Running ({address})", address=url.split("//")[1])
+        return False, _("Installed, not running") if plat.ollama_installed() else _("Not installed")
 
     def fix_ollama(report):
         if not plat.ollama_installed():
             plat.install_ollama(report)
             if not plat.ollama_installed():
-                raise RuntimeError("Ollama kurulamadı")
-        report("Ollama başlatılıyor…", None)
+                raise RuntimeError(_("Couldn't install Ollama"))
+        report(_("Starting Ollama…"), None)
         if not start_ollama():
-            raise RuntimeError("Ollama başlatılamadı")
+            raise RuntimeError(_("Couldn't start Ollama"))
 
     def check_model():
         url = cfg.get("ollama_url") or find_ollama_url()
         if not cfg.get("model"):
             cfg["model"] = choose_model()
         if not url:
-            return False, f"{cfg['model']} (önce Ollama)"
+            return False, _("{model} (Ollama first)", model=cfg["model"])
         if model_installed(url, cfg["model"]):
             return True, cfg["model"]
-        return False, f"{cfg['model']} indirilmedi"
+        return False, _("{model} not downloaded", model=cfg["model"])
 
     def fix_model(report):
         url = cfg.get("ollama_url") or find_ollama_url()
         if not url:
-            raise RuntimeError("Önce Ollama kurulmalı")
+            raise RuntimeError(_("Install Ollama first"))
         pull_model(url, cfg["model"], report)
 
     def check_ocr():
@@ -199,16 +200,16 @@ def build_steps(cfg, app_dir):
 
     steps = [
         Step("chiaki-ng", check_chiaki, fix_chiaki),
-        Step("PS5 eşleştirme", check_pairing, fix_pairing),
-        Step("chiaki-ng ayarları", check_chiaki_settings, fix_chiaki_settings),
+        Step(_("PS5 pairing"), check_pairing, fix_pairing),
+        Step(_("chiaki-ng settings"), check_chiaki_settings, fix_chiaki_settings),
         Step("Ollama", check_ollama, fix_ollama),
-        Step("Çeviri modeli", check_model, fix_model),
+        Step(_("Translation model"), check_model, fix_model),
         Step("OCR", check_ocr, None),
     ]
     if plat.NEEDS_PERMISSIONS:
         # Not required: macOS 27 reported "no access" even after it was granted, which locked people
         # out of the app. A missing permission still shows up when capturing.
-        steps.append(Step("İzinler", plat.permissions_ok, fix_permissions, required=False))
+        steps.append(Step(_("Permissions"), plat.permissions_ok, fix_permissions, required=False))
     return steps
 
 
@@ -218,7 +219,7 @@ def run_checks(steps):
         try:
             results.append(step.check())
         except Exception as e:
-            results.append((False, f"Hata: {e}"))
+            results.append((False, _("Error: {error}", error=e)))
     return results
 
 
@@ -230,7 +231,7 @@ class SetupWindow:
         self.events = queue.Queue()
         self.busy = False
         self.win = tk.Toplevel(root)
-        self.win.title("RemoteSub · Kurulum")
+        self.win.title(_("RemoteSub · Setup"))
         # The title bar can only be recoloured once the window exists on screen.
         self.win.after(50, lambda: plat.dark_title_bar(self.win))
         self.win.resizable(False, False)
@@ -239,14 +240,14 @@ class SetupWindow:
 
         f = ttk.Frame(self.win, padding=14)
         f.grid(sticky="nsew")
-        ttk.Label(f, text="Eksik olanlar kurulacak. Hepsi tamamlanınca uygulama başlar.",
+        ttk.Label(f, text=_("Missing pieces will be installed. The app starts once everything is ready."),
                   font=("Segoe UI", 10, "bold")).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
         self.rows = []
         for i, step in enumerate(steps):
             ttk.Label(f, text=step.title, width=19).grid(row=i + 1, column=0, sticky="w", pady=3)
             status = ttk.Label(f, width=38)
             status.grid(row=i + 1, column=1, sticky="w")
-            button = ttk.Button(f, text="Kur", width=8, command=lambda i=i: self._fix([i]))
+            button = ttk.Button(f, text=_("Install"), width=8, command=lambda i=i: self._fix([i]))
             button.grid(row=i + 1, column=2, padx=(8, 0))
             self.rows.append((status, button))
 
@@ -259,9 +260,9 @@ class SetupWindow:
         self.help.grid(row=n + 2, column=0, columnspan=3, sticky="w", pady=(6, 0))
         buttons = ttk.Frame(f)
         buttons.grid(row=n + 3, column=0, columnspan=3, sticky="e", pady=(12, 0))
-        self.all_btn = ttk.Button(buttons, text="Hepsini kur", command=self._fix_all)
+        self.all_btn = ttk.Button(buttons, text=_("Install all"), command=self._fix_all)
         self.all_btn.grid(row=0, column=0, padx=(0, 6))
-        self.done_btn = ttk.Button(buttons, text="Başla", command=self._finish)
+        self.done_btn = ttk.Button(buttons, text=_("Start"), command=self._finish)
         self.done_btn.grid(row=0, column=1)
 
         self._show_results(results)
@@ -300,9 +301,9 @@ class SetupWindow:
                 step.fix(report)
                 self.events.put(("help", "", None))
                 self.events.put(("results", run_checks(self.steps)))
-            self.events.put(("message", "Tamamlandı.", 1.0))
+            self.events.put(("message", _("Done."), 1.0))
         except Exception as e:
-            self.events.put(("message", f"Hata: {e}", None))
+            self.events.put(("message", _("Error: {error}", error=e), None))
         finally:
             # Checks can wait on the network, so run them here rather than on the UI thread.
             self.events.put(("idle", run_checks(self.steps)))
@@ -328,7 +329,7 @@ class SetupWindow:
                     self.progress.stop()
                     self._show_results(args[0])
                     if ready(self.steps, self.results):
-                        self.message.configure(text="Her şey hazır.")
+                        self.message.configure(text=_("Everything is ready."))
                         self.progress.configure(mode="determinate", value=100)
         except queue.Empty:
             pass

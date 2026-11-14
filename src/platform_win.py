@@ -13,6 +13,7 @@ import winreg
 import mss
 from PIL import Image, ImageChops
 
+from i18n import _
 from netutil import download, github_latest_asset
 
 APP_DIR = os.path.join(os.environ["APPDATA"], "RemoteSub")
@@ -282,7 +283,7 @@ UNINSTALL_KEYS = [
     (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
     (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
 ]
-CHIAKI_SETTINGS_SUMMARY = "d3d11va çözücü · otomatik bağlanma"
+CHIAKI_SETTINGS_SUMMARY = _("d3d11va decoder · auto-connect")
 
 
 def _winget_available():
@@ -332,18 +333,18 @@ def find_chiaki():
 
 def install_chiaki(report):
     if _winget_available():
-        report("chiaki-ng winget ile kuruluyor… (izin penceresi çıkabilir)", None)
+        report(_("Installing chiaki-ng with winget… (a permission prompt may appear)"), None)
         _winget_install("StreetPea.chiaki-ng")
     if find_chiaki():
         return
-    report("chiaki-ng indiriliyor…", None)
+    report(_("Downloading chiaki-ng…"), None)
     url, name = github_latest_asset("streetpea/chiaki-ng",
                                     lambda n: n.endswith(".exe") and "win_x64" in n and "installer" in n)
     if not url:
-        raise RuntimeError("chiaki-ng kurulum dosyası bulunamadı")
+        raise RuntimeError(_("chiaki-ng installer not found"))
     path = os.path.join(tempfile.gettempdir(), name)
     download(url, path, report)
-    report("chiaki-ng kuruluyor… (izin penceresi çıkabilir)", None)
+    report(_("Installing chiaki-ng… (a permission prompt may appear)"), None)
     subprocess.run([path, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-"])
 
 
@@ -358,7 +359,7 @@ def launch_chiaki(path, extra_args=()):
 def close_chiaki():
     """Ask chiaki-ng to quit (it would otherwise keep, and later save, its old settings)."""
     run(["taskkill", "/IM", "chiaki.exe"])
-    for _ in range(20):
+    for _attempt in range(20):
         if not chiaki_running():
             return
         time.sleep(0.5)
@@ -437,13 +438,13 @@ def ollama_installed():
 
 def install_ollama(report):
     if _winget_available():
-        report("Ollama winget ile kuruluyor…", None)
+        report(_("Installing Ollama with winget…"), None)
         _winget_install("Ollama.Ollama")
     if ollama_installed():
         return
     path = os.path.join(tempfile.gettempdir(), "OllamaSetup.exe")
     download(OLLAMA_SETUP_URL, path, report)
-    report("Ollama kuruluyor…", None)
+    report(_("Installing Ollama…"), None)
     subprocess.run([path, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"])
 
 

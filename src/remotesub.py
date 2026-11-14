@@ -25,6 +25,8 @@ import sv_ttk
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 import dialogs
+from i18n import _
+import i18n
 import setup_steps
 import updater
 from dictionary import Dictionary
@@ -64,14 +66,16 @@ DEFAULT_CONFIG = {
     "ps5_host": "",              # refreshed by discovery at every connect
     "auto_connect": True,        # start the chiaki-ng stream when RemoteSub opens
     "chiaki_extra_args": [],     # extra chiaki-ng arguments, e.g. ["--dualsense"]
-    "last_profile": "Varsayılan",
-    "profiles": {"Varsayılan": dict(DEFAULT_PROFILE)},
+    "last_profile": "",          # first profile, named in the interface language
+    "profiles": {},
+    "language": "auto",          # "en", "tr" or "auto" (the system's display language)
 }
 LANG_NAMES = {"en": "English", "tr": "Turkish", "de": "German", "fr": "French", "es": "Spanish",
               "it": "Italian", "ja": "Japanese", "ko": "Korean", "ru": "Russian", "zh": "Chinese"}
-BACKGROUNDS = {"blur": "Buzlu cam", "dim": "Şeffaf, karartılmış"}
+# Labels are looked up when shown, after the interface language is chosen.
+BACKGROUNDS = {"blur": "Frosted glass", "dim": "See-through, dimmed"}
 MUTED = "#9aa0a6"  # secondary text on the dark theme
-PLACEMENTS = {"cover": "Bölgeyi kapla", "above": "Bölgenin üstünde", "match": "İngilizce yazının yerine"}
+PLACEMENTS = {"cover": "Cover the region", "above": "Above the region", "match": "In place of the English text"}
 
 VIDEO_ASPECT = 16 / 9
 READ_INTERVAL = 0.14     # seconds between OCR reads of the region
@@ -98,8 +102,9 @@ def load_config():
             cfg.update(json.load(f))
     except FileNotFoundError:
         pass
+    i18n.set_language(cfg.get("language"))
     if not cfg["profiles"]:
-        cfg["profiles"] = {"Varsayılan": dict(DEFAULT_PROFILE)}
+        cfg["profiles"] = {_("Default profile"): dict(DEFAULT_PROFILE)}
     if cfg["last_profile"] not in cfg["profiles"]:
         cfg["last_profile"] = next(iter(cfg["profiles"]))
     return cfg
@@ -235,14 +240,14 @@ class Translator:
         return dictionary
 
     def translate(self, text, dictionary_name=None):
-        """(translation, where it came from): "sözlük", "önbellek" or "model"."""
+        """(translation, where it came from): "dictionary", "cache" or "model"."""
         dictionary = self.dictionary(dictionary_name)
         if dictionary is not None:
             found = dictionary.lookup(text)
             if found:
-                return found, "sözlük"
+                return found, "dictionary"
         if text in self.cache:
-            return self.cache[text], "önbellek"
+            return self.cache[text], "cache"
         src = LANG_NAMES.get(self.source, self.source)
         tgt = LANG_NAMES.get(self.target, self.target)
         # TranslateGemma is trained on this exact prompt shape (note the two blank lines).
@@ -311,7 +316,7 @@ class Pipeline(threading.Thread):
             if cycle_start >= next_permission_check:
                 allowed, next_permission_check = plat.capture_allowed(), cycle_start + 10.0
             if not allowed:
-                self.post("status", "Ekran Kaydı izni yok · Kurulum → İzinler → Kur, sonra uygulamayı yeniden aç")
+                self.post("status", _("No Screen Recording permission · Setup → Permissions → Install, then reopen the app"))
                 time.sleep(1.0)
                 continue
 
@@ -319,11 +324,11 @@ class Pipeline(threading.Thread):
                 hwnd, next_find = plat.find_chiaki_window(), cycle_start + 1.0
             profile = self.app.current_profile()
             if hwnd is None:
-                self.post("status", "chiaki-ng penceresi bulunamadı")
+                self.post("status", _("chiaki-ng window not found"))
                 time.sleep(0.5)
                 continue
             if not profile.get("region"):
-                self.post("status", f"Bu profil için bölge seçilmemiş ({hotkey_label('R')})")
+                self.post("status", _("No region chosen for this profile ({hotkey})", hotkey=hotkey_label("R")))
                 time.sleep(0.5)
                 continue
             client = plat.client_rect(hwnd)
@@ -338,7 +343,7 @@ class Pipeline(threading.Thread):
             x, y, w, h = box
             if not plat.chiaki_visible_at(hwnd, x + w // 2, y + h // 2):
                 # Nothing of chiaki-ng to read there; don't translate the taskbar or a browser.
-                self.post("status", "chiaki-ng penceresi görünmüyor")
+                self.post("status", _("chiaki-ng window not visible"))
                 if shown_src:
                     self.post("hide")
                     shown_src = ""
@@ -349,7 +354,7 @@ class Pipeline(threading.Thread):
             t_ocr = time.perf_counter()
             text, n_lines, text_box = extract_text(ocr.read(frame))
             ocr_ms = (time.perf_counter() - t_ocr) * 1000
-            self.post("status", f"Çalışıyor · OCR {ocr_ms:.0f} ms")
+            self.post("status", _("Running · OCR {ms} ms", ms=round(ocr_ms)))
 
             if not text or looks_turkish(text):
                 empty_reads += 1
@@ -371,13 +376,14 @@ class Pipeline(threading.Thread):
                     try:
                         translated, origin = self.translator.translate(candidate, profile.get("dictionary"))
                     except Exception as e:
-                        self.post("status", f"Çeviri hatası: {e}")
+                        self.post("status", _("Translation error: {error}", error=e))
                         log(f"translation error: {e}")
                         time.sleep(1)
                         continue
                     done = time.perf_counter()
-                    timing = (f"ilk görülme→ekranda {1000 * (done - first_seen):.0f} ms "
-                              f"(OCR {ocr_ms:.0f} ms, çeviri {1000 * (done - t_tr):.0f} ms, {origin})")
+                    timing = _("first seen → on screen {total} ms (OCR {ocr} ms, translation {translation} ms, {origin})",
+                               total=round(1000 * (done - first_seen)), ocr=round(ocr_ms),
+                               translation=round(1000 * (done - t_tr)), origin=_(origin))
                     # Where the English text sits, in screen pixels relative to the region (the
                     # frame can be at a higher resolution than the screen, e.g. Retina).
                     text_rel = None
@@ -601,7 +607,7 @@ class RegionPicker:
         self.canvas = tk.Canvas(self.win, bg="black", highlightthickness=0, cursor="crosshair")
         self.canvas.pack(fill="both", expand=True)
         self.canvas.create_text(vw // 2, 40, fill="white", font=(plat.UI_FONT, 18, "bold"),
-                                text="Altyazı bölgesini fareyle sürükleyerek seçin  ·  Esc: iptal")
+                                text=_("Drag over the subtitle area  ·  Esc: cancel"))
         if current:
             fx, fy, fw, fh = current
             self.canvas.create_rectangle(fx * vw, fy * vh, (fx + fw) * vw, (fy + fh) * vh,
@@ -698,7 +704,7 @@ class App:
         save_config(self.cfg)
         self.setup_btn.configure(state="normal")
         if not ready:
-            self.status_var.set("Kurulum tamamlanmadı · 'Kurulum' ile devam edin")
+            self.status_var.set(_("Setup not finished · continue with 'Setup'"))
             return
         if not self.cfg.get("setup_completed"):
             self.cfg["setup_completed"] = True
@@ -712,7 +718,7 @@ class App:
             if self.current_profile().get("region"):
                 self.set_active(True)
             else:
-                self.status_var.set(f"Hazır · oyunda {hotkey_label('R')} ile altyazı bölgesini seçin")
+                self.status_var.set(_("Ready · in game, choose the subtitle area with {hotkey}", hotkey=hotkey_label("R")))
             if self.cfg.get("auto_connect") and "--no-connect" not in sys.argv:
                 self.connect()
 
@@ -736,7 +742,7 @@ class App:
 
     def _show_update(self, update):
         self.update = update
-        self.update_btn.configure(text=f"Yeni sürüm {update['version']} · Güncelle", state="normal")
+        self.update_btn.configure(text=_("New version {version} · Update", version=update["version"]), state="normal")
         self.update_btn.grid()
 
     def install_update(self):
@@ -761,28 +767,28 @@ class App:
     def connect(self):
         """Find the PS5 and start chiaki-ng straight into the stream (skipping its main window)."""
         self.connect_btn.configure(state="disabled")
-        self.conn_var.set("PS5 aranıyor…")
+        self.conn_var.set(_("Looking for the PS5…"))
         threading.Thread(target=self._connect_worker, daemon=True).start()
 
     def _connect_worker(self):
         cfg = self.cfg
         try:
             if plat.chiaki_running():
-                self.events.put(("conn", "chiaki-ng zaten açık"))
+                self.events.put(("conn", _("chiaki-ng is already open")))
                 return
             if not cfg.get("ps5_nickname"):
-                self.events.put(("conn", "chiaki-ng'de eşleştirilmiş PS5 yok · 'Kurulum'a bakın"))
+                self.events.put(("conn", _("No PS5 paired in chiaki-ng · see 'Setup'")))
                 return
             host, status = discover_ps5(cfg["ps5_nickname"], cfg["ps5_host"])
             if host is None:
                 # Discovery can miss a sleeping console; try the last known address anyway.
-                host, note = cfg["ps5_host"], "PS5 ağda bulunamadı, son adres deneniyor"
+                host, note = cfg["ps5_host"], _("PS5 not found on the network, trying the last address")
             else:
-                note = "PS5 açık" if status == "on" else "PS5 uyku modunda, uyandırılıyor"
+                note = _("PS5 is on") if status == "on" else _("PS5 is asleep, waking it")
                 if host != cfg["ps5_host"]:
                     cfg["ps5_host"] = host
                     save_config(cfg)
-            self.events.put(("conn", f"{note} · {host} · bağlanılıyor"))
+            self.events.put(("conn", _("{note} · {host} · connecting", note=note, host=host)))
             # chiaki-ng 1.9.9's `stream` command stalls on its host list without connecting, so
             # start it normally and let its own auto-connect (settings/auto_connect_mac, set to
             # this console) open the stream once discovery finds the PS5.
@@ -790,7 +796,7 @@ class App:
             plat.launch_chiaki(cfg["chiaki_path"], cfg.get("chiaki_extra_args", []))
         except Exception as e:
             log(f"connect failed: {e}")
-            self.events.put(("conn", f"Bağlantı hatası: {e}"))
+            self.events.put(("conn", _("Connection error: {error}", error=e)))
         finally:
             self.events.put(("conn_done",))
 
@@ -808,14 +814,14 @@ class App:
         self.profile_box["values"] = list(self.cfg["profiles"])
         self.profile_var.set(self.cfg["last_profile"])
         self.font_var.set(p.get("font_size", 20))
-        self.placement_var.set(PLACEMENTS[p.get("placement", "cover")])
-        self.region_var.set("kayıtlı" if p.get("region") else "seçilmedi")
-        self.dictionary_var.set(p["dictionary"] if p.get("dictionary") else "yok · her satır modele gider")
+        self.placement_var.set(_(PLACEMENTS[p.get("placement", "cover")]))
+        self.region_var.set(_("saved") if p.get("region") else _("not chosen"))
+        self.dictionary_var.set(p["dictionary"] if p.get("dictionary") else _("none · every line goes to the model"))
         font_file = self.profile_font_path(p)
-        self.typeface_var.set(os.path.splitext(os.path.basename(font_file))[0] if font_file else "Sistem yazı tipi")
-        self.background_var.set(BACKGROUNDS[p.get("background", "blur")])
+        self.typeface_var.set(os.path.splitext(os.path.basename(font_file))[0] if font_file else _("System font"))
+        self.background_var.set(_(BACKGROUNDS[p.get("background", "blur")]))
         self.dim_var.set(p.get("dim_percent", 55))
-        self.dim_label.configure(text=f"%{p.get('dim_percent', 55)}")
+        self.dim_label.configure(text=_("{value}%", value=p.get("dim_percent", 55)))
         self.dim_scale.state(["!disabled"] if p.get("background") == "dim" else ["disabled"])
         self.overlay.configure(p.get("font_size", 20), p.get("placement", "cover"), font_file,
                                p.get("background", "blur"), p.get("dim_percent", 55))
@@ -827,7 +833,7 @@ class App:
         self._apply_profile()
 
     def _new_profile(self):
-        name = simpledialog.askstring("Yeni profil", "Oyunun adı:", parent=self.root)
+        name = simpledialog.askstring(_("New profile"), _("Game name:"), parent=self.root)
         if not name or not name.strip():
             return
         name = name.strip()
@@ -842,7 +848,7 @@ class App:
         if len(self.cfg["profiles"]) == 1:
             return
         name = self.cfg["last_profile"]
-        if self.ask("Profili sil", f"'{name}' profili silinsin mi?", yes="Sil"):
+        if self.ask(_("Delete profile"), _("Delete the '{name}' profile?", name=name), yes=_("Delete")):
             del self.cfg["profiles"][name]
             self.cfg["last_profile"] = next(iter(self.cfg["profiles"]))
             save_config(self.cfg)
@@ -855,20 +861,20 @@ class App:
 
     def choose_font(self):
         """Use a font file (.ttf/.otf) for this profile's subtitles, e.g. the game's own typeface."""
-        path = filedialog.askopenfilename(parent=self.root, title="Yazı tipi dosyası",
-                                          filetypes=[("Yazı tipi", "*.ttf *.otf *.ttc"), ("Tümü", "*.*")])
+        path = filedialog.askopenfilename(parent=self.root, title=_("Font file"),
+                                          filetypes=[(_("Font"), "*.ttf *.otf *.ttc"), (_("All files"), "*.*")])
         if not path:
             return
         try:
             font = ImageFont.truetype(path, 24)
         except OSError as e:
-            self.inform("Yazı tipi", f"Yazı tipi açılamadı: {e}")
+            self.inform(_("Font"), _("Couldn't open the font: {error}", error=e))
             return
         # The translation is Turkish: warn when the font can't draw its letters.
         missing = [c for c in "ğĞışŞİçÇöÖüÜ" if font.getmask(c).getbbox() is None]
         if missing and not self.ask(
-                "Yazı tipi", f"Bu yazı tipinde şu harfler yok: {' '.join(missing)}\nYine de kullanılsın mı?",
-                yes="Kullan"):
+                _("Font"), _("This font is missing these letters: {letters}\nUse it anyway?", letters=" ".join(missing)),
+                yes=_("Use")):
             return
         os.makedirs(FONT_DIR, exist_ok=True)
         name = os.path.basename(path)
@@ -879,7 +885,7 @@ class App:
     def reset_font(self):
         self._update_profile(font_file=None)
 
-    def ask(self, title, message, yes="Evet"):
+    def ask(self, title, message, yes=_("Yes")):
         return dialogs.ask(self.root, title, message, yes=yes, dark_title_bar=plat.dark_title_bar)
 
     def inform(self, title, message):
@@ -887,14 +893,14 @@ class App:
 
     def choose_dictionary(self):
         """Attach a pre-translated dictionary (JSON: source line -> translation) to this profile."""
-        path = filedialog.askopenfilename(parent=self.root, title="Sözlük dosyası (JSON)",
-                                          filetypes=[("JSON", "*.json"), ("Tümü", "*.*")])
+        path = filedialog.askopenfilename(parent=self.root, title=_("Dictionary file (JSON)"),
+                                          filetypes=[("JSON", "*.json"), (_("All files"), "*.*")])
         if not path:
             return
         try:
             count = len(Dictionary(path))
         except Exception as e:
-            self.inform("Sözlük", f"Dosya okunamadı: {e}")
+            self.inform(_("Dictionary"), _("Couldn't read the file: {error}", error=e))
             return
         os.makedirs(DICTIONARY_DIR, exist_ok=True)
         name = os.path.basename(path)
@@ -904,13 +910,13 @@ class App:
         if self.pipeline:
             self.pipeline.translator.dictionaries.pop(name, None)  # reload a replaced file
         self._update_profile(dictionary=name)
-        self.status_var.set(f"Sözlük yüklendi: {count} satır")
+        self.status_var.set(_("Dictionary loaded: {count} lines", count=count))
 
     # actions
     def pick_region(self):
         hwnd = plat.find_chiaki_window()
         if not hwnd:
-            self.inform("RemoteSub", "chiaki-ng penceresi bulunamadı. Önce PS5 yayınını açın.")
+            self.inform("RemoteSub", _("chiaki-ng window not found. Start the PS5 stream first."))
             return
         video = video_rect(plat.client_rect(hwnd))
         RegionPicker(self.root, video, self.current_profile().get("region"), self._region_chosen)
@@ -935,7 +941,7 @@ class App:
                 path = os.path.join(SHOTS_DIR, time.strftime("%Y%m%d-%H%M%S") + ".png")
                 image.save(path)
                 log(f"snapshot saved: {path}")
-                self.status_var.set(f"Görüntü kaydedildi: {os.path.basename(path)}")
+                self.status_var.set(_("Screenshot saved: {name}", name=os.path.basename(path)))
             finally:
                 self.overlay.set_capturable(False)
                 self.pipeline.paused.clear()
@@ -951,8 +957,8 @@ class App:
         else:
             self.pipeline.active.clear()
             self.overlay.hide()
-            self.status_var.set("Durduruldu")
-        label = "Çeviriyi durdur" if active else "Çeviriyi başlat"
+            self.status_var.set(_("Stopped"))
+        label = _("Stop translating") if active else _("Start translating")
         self.toggle_btn.configure(text=f"{label}  ·  {hotkey_label('T')}",
                                   style="Big.TButton" if active else "Big.Accent.TButton")
 
@@ -965,8 +971,8 @@ class App:
         header.grid(row=0, column=0, sticky="we")
         header.columnconfigure(0, weight=1)
         ttk.Label(header, text="RemoteSub", style="Title.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(header, text=f"sürüm {VERSION}", style="Muted.TLabel").grid(row=1, column=0, sticky="w")
-        self.setup_btn = ttk.Button(header, text="Kurulum", command=self.open_setup)
+        ttk.Label(header, text=_("version {version}", version=VERSION), style="Muted.TLabel").grid(row=1, column=0, sticky="w")
+        self.setup_btn = ttk.Button(header, text=_("Setup"), command=self.open_setup)
         self.setup_btn.grid(row=0, column=1, rowspan=2, sticky="e")
         self.update_btn = ttk.Button(outer, style="Accent.TButton", command=self.install_update)
         self.update_btn.grid(row=1, column=0, sticky="we", pady=(12, 0))
@@ -976,50 +982,50 @@ class App:
         conn = ttk.LabelFrame(outer, text="PS5", padding=12)
         conn.grid(row=2, column=0, sticky="we", pady=(14, 0))
         conn.columnconfigure(0, weight=1)
-        self.conn_var = tk.StringVar(value="Bağlı değil")
+        self.conn_var = tk.StringVar(value=_("Not connected"))
         ttk.Label(conn, textvariable=self.conn_var, style="Muted.TLabel", wraplength=260).grid(
             row=0, column=0, sticky="w")
-        self.connect_btn = ttk.Button(conn, text="Bağlan", command=self.connect, state="disabled")
+        self.connect_btn = ttk.Button(conn, text=_("Connect"), command=self.connect, state="disabled")
         self.connect_btn.grid(row=0, column=1, sticky="e", padx=(8, 0))
 
         # profile: game, region, dictionary
-        prof = ttk.LabelFrame(outer, text="Oyun profili", padding=12)
+        prof = ttk.LabelFrame(outer, text=_("Game profile"), padding=12)
         prof.grid(row=3, column=0, sticky="we", pady=(12, 0))
         prof.columnconfigure(1, weight=1)
         self.profile_var = tk.StringVar()
         self.profile_box = ttk.Combobox(prof, textvariable=self.profile_var, state="readonly")
         self.profile_box.grid(row=0, column=0, columnspan=2, sticky="we")
         self.profile_box.bind("<<ComboboxSelected>>", self._select_profile)
-        ttk.Button(prof, text="Yeni", command=self._new_profile).grid(row=0, column=2, padx=(8, 0))
-        ttk.Button(prof, text="Sil", command=self._delete_profile).grid(row=0, column=3, padx=(6, 0))
+        ttk.Button(prof, text=_("New"), command=self._new_profile).grid(row=0, column=2, padx=(8, 0))
+        ttk.Button(prof, text=_("Delete"), command=self._delete_profile).grid(row=0, column=3, padx=(6, 0))
 
-        ttk.Label(prof, text="Altyazı bölgesi").grid(row=1, column=0, sticky="w", pady=(12, 0))
+        ttk.Label(prof, text=_("Subtitle area")).grid(row=1, column=0, sticky="w", pady=(12, 0))
         self.region_var = tk.StringVar()
         ttk.Label(prof, textvariable=self.region_var, style="Muted.TLabel").grid(
             row=1, column=1, sticky="w", padx=8, pady=(12, 0))
-        ttk.Button(prof, text=f"Seç  ·  {hotkey_label('R')}", command=self.pick_region).grid(
+        ttk.Button(prof, text=_("Choose  ·  {hotkey}", hotkey=hotkey_label("R")), command=self.pick_region).grid(
             row=1, column=2, columnspan=2, sticky="we", pady=(12, 0))
 
-        ttk.Label(prof, text="Sözlük").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(prof, text=_("Dictionary")).grid(row=2, column=0, sticky="w", pady=(8, 0))
         self.dictionary_var = tk.StringVar()
         ttk.Label(prof, textvariable=self.dictionary_var, style="Muted.TLabel", wraplength=170).grid(
             row=2, column=1, sticky="w", padx=8, pady=(8, 0))
-        ttk.Button(prof, text="Seç…", command=self.choose_dictionary).grid(
+        ttk.Button(prof, text=_("Choose…"), command=self.choose_dictionary).grid(
             row=2, column=2, columnspan=2, sticky="we", pady=(8, 0))
 
         # appearance of the translation
-        look = ttk.LabelFrame(outer, text="Görünüm", padding=12)
+        look = ttk.LabelFrame(outer, text=_("Appearance"), padding=12)
         look.grid(row=4, column=0, sticky="we", pady=(12, 0))
         look.columnconfigure(1, weight=1)
-        ttk.Label(look, text="Konum").grid(row=0, column=0, sticky="w")
+        ttk.Label(look, text=_("Placement")).grid(row=0, column=0, sticky="w")
         self.placement_var = tk.StringVar()
         placement = ttk.Combobox(look, textvariable=self.placement_var, state="readonly",
-                                 values=list(PLACEMENTS.values()))
+                                 values=[_(v) for v in PLACEMENTS.values()])
         placement.grid(row=0, column=1, columnspan=3, sticky="we", padx=(8, 0))
         placement.bind("<<ComboboxSelected>>", lambda e: self._update_profile(
-            placement=next(k for k, v in PLACEMENTS.items() if v == self.placement_var.get())))
+            placement=next(k for k, v in PLACEMENTS.items() if _(v) == self.placement_var.get())))
 
-        ttk.Label(look, text="Boyut").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(look, text=_("Size")).grid(row=1, column=0, sticky="w", pady=(8, 0))
         self.font_var = tk.IntVar()
         size = ttk.Spinbox(look, from_=10, to=60, textvariable=self.font_var, width=6,
                            command=lambda: self._update_profile(font_size=self.font_var.get()))
@@ -1027,29 +1033,29 @@ class App:
         size.bind("<Return>", lambda e: self._update_profile(font_size=self.font_var.get()))
         size.bind("<FocusOut>", lambda e: self._update_profile(font_size=self.font_var.get()))
 
-        ttk.Label(look, text="Yazı tipi").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(look, text=_("Font")).grid(row=2, column=0, sticky="w", pady=(8, 0))
         self.typeface_var = tk.StringVar()
         ttk.Label(look, textvariable=self.typeface_var, style="Muted.TLabel", wraplength=150).grid(
             row=2, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
-        ttk.Button(look, text="Seç…", command=self.choose_font).grid(row=2, column=2, pady=(8, 0))
-        ttk.Button(look, text="Varsayılan", command=self.reset_font).grid(row=2, column=3, padx=(6, 0), pady=(8, 0))
+        ttk.Button(look, text=_("Choose…"), command=self.choose_font).grid(row=2, column=2, pady=(8, 0))
+        ttk.Button(look, text=_("Default"), command=self.reset_font).grid(row=2, column=3, padx=(6, 0), pady=(8, 0))
 
-        ttk.Label(look, text="Arka plan").grid(row=3, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(look, text=_("Background")).grid(row=3, column=0, sticky="w", pady=(8, 0))
         self.background_var = tk.StringVar()
         background = ttk.Combobox(look, textvariable=self.background_var, state="readonly",
-                                  values=list(BACKGROUNDS.values()))
+                                  values=[_(v) for v in BACKGROUNDS.values()])
         background.grid(row=3, column=1, columnspan=3, sticky="we", padx=(8, 0), pady=(8, 0))
         background.bind("<<ComboboxSelected>>", lambda e: self._update_profile(
-            background=next(k for k, v in BACKGROUNDS.items() if v == self.background_var.get())))
+            background=next(k for k, v in BACKGROUNDS.items() if _(v) == self.background_var.get())))
 
-        ttk.Label(look, text="Karartma").grid(row=4, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(look, text=_("Dimming")).grid(row=4, column=0, sticky="w", pady=(8, 0))
         self.dim_var = tk.IntVar(value=55)
         self.dim_scale = ttk.Scale(look, from_=0, to=90, variable=self.dim_var,
-                                   command=lambda v: self.dim_label.configure(text=f"%{round(float(v))}"))
+                                   command=lambda v: self.dim_label.configure(text=_("{value}%", value=round(float(v)))))
         self.dim_scale.grid(row=4, column=1, columnspan=2, sticky="we", padx=(8, 0), pady=(8, 0))
         # Re-render only once the slider is released, not on every pixel of the drag.
         self.dim_scale.bind("<ButtonRelease-1>", lambda e: self._update_profile(dim_percent=round(self.dim_var.get())))
-        self.dim_label = ttk.Label(look, text="%55", style="Muted.TLabel", width=4)
+        self.dim_label = ttk.Label(look, text=_("{value}%", value=55), style="Muted.TLabel", width=4)
         self.dim_label.grid(row=4, column=3, sticky="e", pady=(8, 0))
 
         self.toggle_btn = ttk.Button(outer, state="disabled", style="Big.Accent.TButton",
@@ -1057,10 +1063,10 @@ class App:
         self.toggle_btn.grid(row=5, column=0, sticky="we", pady=(16, 0))
 
         # what was read and translated last
-        last = ttk.LabelFrame(outer, text="Son çeviri", padding=12)
+        last = ttk.LabelFrame(outer, text=_("Last translation"), padding=12)
         last.grid(row=6, column=0, sticky="we", pady=(14, 0))
         last.columnconfigure(0, weight=1)
-        self.status_var = tk.StringVar(value="Durduruldu")
+        self.status_var = tk.StringVar(value=_("Stopped"))
         ttk.Label(last, textvariable=self.status_var, style="Muted.TLabel", wraplength=380).grid(
             row=0, column=0, sticky="w")
         self.src_var, self.dst_var, self.timing_var = tk.StringVar(), tk.StringVar(), tk.StringVar()
@@ -1070,7 +1076,7 @@ class App:
             row=2, column=0, sticky="w", pady=(2, 0))
         ttk.Label(last, textvariable=self.timing_var, style="Muted.TLabel", wraplength=380).grid(
             row=3, column=0, sticky="w", pady=(6, 0))
-        self.toggle_btn.configure(text=f"Çeviriyi başlat  ·  {hotkey_label('T')}")
+        self.toggle_btn.configure(text=f"{_('Start translating')}  ·  {hotkey_label('T')}")
 
     def _pump(self):
         try:
@@ -1100,7 +1106,7 @@ class App:
                 elif kind == "update_status":
                     self.status_var.set(args[0])
                 elif kind == "update_failed":
-                    self.status_var.set(f"Güncelleme olmadı: {args[0]}")
+                    self.status_var.set(_("Update failed: {error}", error=args[0]))
                     self.update_btn.configure(state="normal")
                 elif kind == "update_installed":
                     plat.relaunch_after_update()

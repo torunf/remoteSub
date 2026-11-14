@@ -24,6 +24,7 @@ import Foundation
 import Quartz
 from PIL import Image
 
+from i18n import _
 from netutil import download, github_latest_asset
 
 APP_DIR = os.path.expanduser("~/Library/Application Support/RemoteSub")
@@ -305,10 +306,10 @@ def _copy_app(source_app, report):
     if os.path.exists(dest):
         shutil.rmtree(dest, ignore_errors=True)
     if run(["ditto", source_app, dest]).returncode != 0:
-        report("Yönetici parolası istenecek…", None)
+        report(_("An administrator password will be requested…"), None)
         script = f'do shell script "rm -rf \\"{dest}\\"; ditto \\"{source_app}\\" \\"{dest}\\"" with administrator privileges'
         if run(["osascript", "-e", script]).returncode != 0:
-            raise RuntimeError(f"{os.path.basename(source_app)} /Applications klasörüne kopyalanamadı")
+            raise RuntimeError(_("Couldn't copy {name} to /Applications", name=os.path.basename(source_app)))
     run(["xattr", "-dr", "com.apple.quarantine", dest])
     return dest
 
@@ -316,11 +317,11 @@ def _copy_app(source_app, report):
 def _install_from_dmg(dmg_path, report):
     mount = tempfile.mkdtemp(prefix="remotesub-dmg-")
     if run(["hdiutil", "attach", "-nobrowse", "-readonly", "-mountpoint", mount, dmg_path]).returncode != 0:
-        raise RuntimeError("Disk görüntüsü açılamadı")
+        raise RuntimeError(_("Couldn't open the disk image"))
     try:
         apps = glob.glob(os.path.join(mount, "*.app"))
         if not apps:
-            raise RuntimeError("Disk görüntüsünde uygulama yok")
+            raise RuntimeError(_("No app in the disk image"))
         return _copy_app(apps[0], report)
     finally:
         run(["hdiutil", "detach", mount, "-quiet"])
@@ -329,7 +330,7 @@ def _install_from_dmg(dmg_path, report):
 # ---------------------------------------------------------------- chiaki-ng install and settings
 
 CHIAKI_DOMAIN = "com.chiaki.Chiaki"  # Qt QSettings for organization "Chiaki", application "Chiaki"
-CHIAKI_SETTINGS_SUMMARY = "otomatik bağlanma"
+CHIAKI_SETTINGS_SUMMARY = _("auto-connect")
 
 
 def find_chiaki():
@@ -340,14 +341,14 @@ def find_chiaki():
 
 def install_chiaki(report):
     if platform.machine() != "arm64":
-        raise RuntimeError("chiaki-ng'nin macOS sürümü yalnızca Apple Silicon (M1 ve sonrası) için var")
-    report("chiaki-ng indiriliyor…", None)
+        raise RuntimeError(_("chiaki-ng for macOS only exists for Apple Silicon (M1 and later)"))
+    report(_("Downloading chiaki-ng…"), None)
     url, name = github_latest_asset("streetpea/chiaki-ng", lambda n: n.endswith(".dmg") and "macos" in n)
     if not url:
-        raise RuntimeError("chiaki-ng macOS kurulum dosyası bulunamadı")
+        raise RuntimeError(_("chiaki-ng installer not found"))
     path = os.path.join(tempfile.gettempdir(), name)
     download(url, path, report)
-    report("chiaki-ng kuruluyor…", None)
+    report(_("Installing chiaki-ng…"), None)
     _install_from_dmg(path, report)
 
 
@@ -364,7 +365,7 @@ def launch_chiaki(path, extra_args=()):
 
 def close_chiaki():
     run(["osascript", "-e", 'tell application "chiaki-ng" to quit'])
-    for _ in range(20):
+    for _attempt in range(20):
         if not chiaki_running():
             return
         time.sleep(0.5)
@@ -431,13 +432,13 @@ def ollama_installed():
 def install_ollama(report):
     path = os.path.join(tempfile.gettempdir(), "Ollama-darwin.zip")
     download(OLLAMA_ZIP_URL, path, report)
-    report("Ollama kuruluyor…", None)
+    report(_("Installing Ollama…"), None)
     unpacked = tempfile.mkdtemp(prefix="remotesub-ollama-")
     if run(["ditto", "-x", "-k", path, unpacked]).returncode != 0:
-        raise RuntimeError("Ollama arşivi açılamadı")
+        raise RuntimeError(_("Couldn't open the Ollama archive"))
     apps = glob.glob(os.path.join(unpacked, "*.app"))
     if not apps:
-        raise RuntimeError("Ollama arşivinde uygulama yok")
+        raise RuntimeError(_("No app in the Ollama archive"))
     _copy_app(apps[0], report)
 
 
@@ -476,15 +477,15 @@ def install_update(pkg_path, report):
     """Verify a downloaded RemoteSub package and install it (macOS asks for an admin password)."""
     signature = run(["pkgutil", "--check-signature", pkg_path]).stdout
     if "Developer ID Installer" not in signature or f"({UPDATE_TEAM_ID})" not in signature:
-        raise RuntimeError("Güncelleme paketinin imzası RemoteSub'a ait değil")
+        raise RuntimeError(_("The update package isn't signed by RemoteSub"))
     if run(["spctl", "--assess", "--type", "install", pkg_path]).returncode != 0:
-        raise RuntimeError("Güncelleme paketi Apple onayından geçmemiş")
-    report("Kuruluyor… (yönetici parolası istenecek)")
+        raise RuntimeError(_("The update package isn't notarized by Apple"))
+    report(_("Installing… (an administrator password will be requested)"))
     script = (f'do shell script "/usr/sbin/installer -pkg " & quoted form of "{pkg_path}" & " -target /" '
               "with administrator privileges")
     result = run(["osascript", "-e", script])
     if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "Kurulum iptal edildi")
+        raise RuntimeError(result.stderr.strip() or _("Installation cancelled"))
 
 
 def relaunch_after_update():
@@ -560,10 +561,10 @@ def screen_capture_allowed():
 
 def permissions_ok():
     if not screen_capture_allowed():
-        return False, "Ekran Kaydı izni yok"
+        return False, _("No Screen Recording permission")
     if not _accessibility_trusted():
-        return True, "Ekran Kaydı (kısayollar için Erişilebilirlik izni yok)"
-    return True, "Ekran Kaydı · Erişilebilirlik"
+        return True, _("Screen Recording (no Accessibility permission for hotkeys)")
+    return True, _("Screen Recording · Accessibility")
 
 
 def request_permissions(report):
@@ -574,11 +575,11 @@ def request_permissions(report):
     Quartz.CGRequestScreenCaptureAccess()
     _accessibility_trusted(prompt=True)
     run(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"])
-    report("Sistem Ayarları → Gizlilik ve Güvenlik → Ekran ve Sistem Sesi Kaydı'nda RemoteSub'ı aç. "
-           "Kısayollar için Erişilebilirlik listesinde de aç. macOS izni çoğu zaman ancak uygulama "
-           "yeniden açılınca tanır: izni verdikten sonra RemoteSub'ı kapatıp yeniden aç.", None, help_text=True)
-    for _ in range(120):
+    report(_("In System Settings → Privacy & Security → Screen & System Audio Recording, turn RemoteSub on. "
+             "For the hotkeys, turn it on under Accessibility too. macOS often only notices the permission "
+             "after a restart: once it is on, quit RemoteSub and open it again."), None, help_text=True)
+    for _attempt in range(120):
         if screen_capture_allowed():
             return
         time.sleep(1)
-    raise RuntimeError("Ekran Kaydı izni henüz görünmüyor; izni verdiysen RemoteSub'ı yeniden aç")
+    raise RuntimeError(_("Screen Recording permission not visible yet; if you granted it, reopen RemoteSub"))

@@ -10,6 +10,8 @@ import shutil
 import subprocess
 import sys
 
+from i18n import _
+
 ONEOCR_FILES = ("oneocr.dll", "oneocr.onemodel", "onnxruntime.dll")
 
 
@@ -44,10 +46,10 @@ def prepare_oneocr(target_dir):
 def describe(app_dir):
     """Which engine OCR will use, for the setup window."""
     if sys.platform == "darwin":
-        return "Apple Vision"
+        return _("Apple Vision")
     if prepare_oneocr(os.path.join(app_dir, "oneocr")):
-        return "OneOCR (Windows Ekran Alıntısı Aracı)"
-    return "RapidOCR (Ekran Alıntısı Aracı yok)"
+        return _("OneOCR (Windows Snipping Tool)")
+    return _("RapidOCR (no Snipping Tool)")
 
 
 class OcrEngine:

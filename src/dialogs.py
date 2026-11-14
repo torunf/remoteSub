@@ -7,6 +7,8 @@ plain Tk windows, so that never happens, and they match the app's dark theme.
 import tkinter as tk
 from tkinter import ttk
 
+from i18n import _
+
 
 def _dialog(parent, title, message, buttons, dark_title_bar=None):
     """Show a modal dialog; returns the index of the button pressed (or None if closed)."""
@@ -43,9 +45,10 @@ def _dialog(parent, title, message, buttons, dark_title_bar=None):
     return result["value"]
 
 
-def ask(parent, title, message, yes="Evet", no="Vazgeç", dark_title_bar=None):
-    return _dialog(parent, title, message, [(no, False), (yes, True)], dark_title_bar) == 1
+def ask(parent, title, message, yes=None, no=None, dark_title_bar=None):
+    return _dialog(parent, title, message, [(no or _("Cancel"), False), (yes or _("Yes"), True)],
+                   dark_title_bar) == 1
 
 
 def inform(parent, title, message, dark_title_bar=None):
-    _dialog(parent, title, message, [("Tamam", True)], dark_title_bar)
+    _dialog(parent, title, message, [(_("OK"), True)], dark_title_bar)

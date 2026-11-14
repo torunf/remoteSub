@@ -3,6 +3,8 @@ import json
 import ssl
 import urllib.request
 
+from i18n import _
+
 
 def _ssl_context():
     # The python.org Python bundled into the macOS app has no CA certificates of its own, so
@@ -29,7 +31,7 @@ def download(url, path, report):
             f.write(chunk)
             done += len(chunk)
             if total:
-                report(f"İndiriliyor… {done >> 20} / {total >> 20} MB", done / total)
+                report(_("Downloading… {done} / {total} MB", done=done >> 20, total=total >> 20), done / total)
 
 
 def github_latest_asset(repo, match):
