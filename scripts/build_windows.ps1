@@ -22,7 +22,10 @@ if ($LASTEXITCODE) { throw "PyInstaller failed" }
 
 $redist = Join-Path $root "installer\windows\redist\chiaki-ng-setup.exe"
 if ($RefreshChiaki -or -not (Test-Path $redist)) {
-    $release = Invoke-RestMethod https://api.github.com/repos/streetpea/chiaki-ng/releases/latest
+    # Authenticated when GITHUB_TOKEN is set (CI): shared runner IPs exhaust the anonymous rate limit.
+    $headers = @{}
+    if ($env:GITHUB_TOKEN) { $headers.Authorization = "Bearer $env:GITHUB_TOKEN" }
+    $release = Invoke-RestMethod https://api.github.com/repos/streetpea/chiaki-ng/releases/latest -Headers $headers
     $asset = $release.assets | Where-Object { $_.name -like "*win_x64*installer*.exe" } | Select-Object -First 1
     if (-not $asset) { throw "chiaki-ng Windows installer not found in $($release.tag_name)" }
     New-Item -ItemType Directory -Force (Split-Path $redist) | Out-Null

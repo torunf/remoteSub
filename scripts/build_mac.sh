@@ -24,7 +24,10 @@ plutil -replace NSAppleEventsUsageDescription -string \
 codesign --force --deep --sign - dist/RemoteSub.app
 
 # The latest chiaki-ng for macOS, taken out of its disk image.
-url=$(curl -fsSL https://api.github.com/repos/streetpea/chiaki-ng/releases/latest | python3 -c '
+# Authenticated when GITHUB_TOKEN is set (CI): shared runner IPs exhaust the anonymous rate limit.
+auth=()
+[ -n "${GITHUB_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $GITHUB_TOKEN")
+url=$(curl -fsSL ${auth[@]+"${auth[@]}"} https://api.github.com/repos/streetpea/chiaki-ng/releases/latest | python3 -c '
 import json, sys
 assets = json.load(sys.stdin)["assets"]
 print(next(a["browser_download_url"] for a in assets if a["name"].lower().endswith(".dmg") and "macos" in a["name"].lower()))')
