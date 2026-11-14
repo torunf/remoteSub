@@ -82,14 +82,28 @@ class OcrEngine:
 
     def lines(self, image):
         """Text lines in a PIL image, top to bottom."""
-        if self.name == "OneOCR":
-            return [line.get("text", "") for line in self._oneocr.recognize_pil(image).get("lines", [])]
-        if self.name == "Apple Vision":
-            return self._vision_lines(image)
-        result = self._rapid(self._np.asarray(image.convert("RGB")))
-        return list(result.txts or [])
+        return [text for text, _ in self.read(image)]
 
-    def _vision_lines(self, image):
+    def read(self, image):
+        """[(text, (x0, y0, x1, y1))] in image pixels, top to bottom."""
+        if self.name == "OneOCR":
+            found = []
+            for line in self._oneocr.recognize_pil(image).get("lines", []):
+                r = line.get("bounding_rect")
+                if r:
+                    xs, ys = (r["x1"], r["x2"], r["x3"], r["x4"]), (r["y1"], r["y2"], r["y3"], r["y4"])
+                    found.append((line.get("text", ""), (min(xs), min(ys), max(xs), max(ys))))
+            return sorted(found, key=lambda item: item[1][1])
+        if self.name == "Apple Vision":
+            return self._vision_read(image)
+        result = self._rapid(self._np.asarray(image.convert("RGB")))
+        found = []
+        for text, quad in zip(result.txts or [], result.boxes if result.boxes is not None else []):
+            xs, ys = [float(p[0]) for p in quad], [float(p[1]) for p in quad]
+            found.append((text, (min(xs), min(ys), max(xs), max(ys))))
+        return sorted(found, key=lambda item: (round(item[1][1] / 8), item[1][0]))
+
+    def _vision_read(self, image):
         buf = io.BytesIO()
         image.save(buf, "PNG")
         data = self._nsdata.dataWithBytes_length_(buf.getvalue(), buf.tell())
@@ -99,10 +113,14 @@ class OcrEngine:
         request.setRecognitionLanguages_(["en-US"])
         request.setUsesLanguageCorrection_(True)
         handler.performRequests_error_([request], None)
+        width, height = image.size
         found = []
         for observation in request.results() or []:
             candidates = observation.topCandidates_(1)
             if candidates:
-                # Vision's origin is bottom-left, so a higher y is further up the image.
-                found.append((-observation.boundingBox().origin.y, candidates[0].string()))
-        return [text for _, text in sorted(found)]
+                # Vision boxes are normalized with a bottom-left origin.
+                b = observation.boundingBox()
+                x0, x1 = b.origin.x * width, (b.origin.x + b.size.width) * width
+                y0 = (1 - b.origin.y - b.size.height) * height
+                found.append((candidates[0].string(), (x0, y0, x1, y0 + b.size.height * height)))
+        return sorted(found, key=lambda item: item[1][1])

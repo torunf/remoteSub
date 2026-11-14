@@ -231,6 +231,8 @@ class SetupWindow:
         self.busy = False
         self.win = tk.Toplevel(root)
         self.win.title("RemoteSub · Kurulum")
+        # The title bar can only be recoloured once the window exists on screen.
+        self.win.after(50, lambda: plat.dark_title_bar(self.win))
         self.win.resizable(False, False)
         self.win.attributes("-topmost", True)
         self.win.protocol("WM_DELETE_WINDOW", self._close)
@@ -251,7 +253,7 @@ class SetupWindow:
         n = len(steps) + 1
         self.progress = ttk.Progressbar(f, length=440, mode="determinate")
         self.progress.grid(row=n, column=0, columnspan=3, sticky="we", pady=(12, 4))
-        self.message = ttk.Label(f, wraplength=440, foreground="#444")
+        self.message = ttk.Label(f, wraplength=440, foreground="#9aa0a6")
         self.message.grid(row=n + 1, column=0, columnspan=3, sticky="w")
         self.help = ttk.Label(f, wraplength=440, justify="left")
         self.help.grid(row=n + 2, column=0, columnspan=3, sticky="w", pady=(6, 0))
@@ -268,7 +270,7 @@ class SetupWindow:
     def _show_results(self, results):
         self.results = results
         for (ok, detail), (status, button), step in zip(results, self.rows, self.steps):
-            status.configure(text=("✓  " if ok else "✗  ") + detail, foreground="#1a7f37" if ok else "#b42318")
+            status.configure(text=("✓  " if ok else "✗  ") + detail, foreground="#3fb950" if ok else "#f85149")
             button.configure(state="disabled" if ok or not step.fix or self.busy else "normal")
         all_ok = ready(self.steps, results)
         self.done_btn.configure(state="normal" if all_ok and not self.busy else "disabled")

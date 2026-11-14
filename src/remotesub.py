@@ -21,6 +21,7 @@ import tkinter as tk
 import urllib.request
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
+import sv_ttk
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageTk
 
 import setup_steps
@@ -45,10 +46,11 @@ CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 LOG_PATH = os.path.join(APP_DIR, "log.txt")
 SHOTS_DIR = os.path.join(APP_DIR, "shots")
 DICTIONARY_DIR = os.path.join(APP_DIR, "dictionaries")
+FONT_DIR = os.path.join(APP_DIR, "fonts")
 # While this file exists, the next translation of a multi-line subtitle is snapshotted.
 SNAP_MULTILINE_FLAG = os.path.join(APP_DIR, "snap_multiline.flag")
 
-DEFAULT_PROFILE = {"region": None, "font_size": 20, "placement": "cover"}
+DEFAULT_PROFILE = {"region": None, "font_size": 20, "placement": "cover", "font_file": None}
 # Machine-specific values start empty; the setup steps (setup_steps.py) fill them in.
 DEFAULT_CONFIG = {
     "ollama_url": "",
@@ -65,7 +67,8 @@ DEFAULT_CONFIG = {
 }
 LANG_NAMES = {"en": "English", "tr": "Turkish", "de": "German", "fr": "French", "es": "Spanish",
               "it": "Italian", "ja": "Japanese", "ko": "Korean", "ru": "Russian", "zh": "Chinese"}
-PLACEMENTS = {"cover": "Orijinalin üstüne", "above": "Orijinalin yukarısına"}
+MUTED = "#9aa0a6"  # secondary text on the dark theme
+PLACEMENTS = {"cover": "Bölgeyi kapla", "above": "Bölgenin üstünde", "match": "İngilizce yazının yerine"}
 
 VIDEO_ASPECT = 16 / 9
 READ_INTERVAL = 0.14     # seconds between OCR reads of the region
@@ -160,13 +163,19 @@ def region_to_screen(region, video):
 # ---------------------------------------------------------------- OCR and translation
 
 def extract_text(ocr_lines):
-    """Subtitle lines joined into one sentence, plus how many lines there were."""
-    lines = []
-    for line in ocr_lines:
-        text = " ".join(line.split())
+    """Subtitle lines joined into one sentence, the number of lines, and the box around them.
+
+    ocr_lines: [(text, (x0, y0, x1, y1))] in image pixels; the box is None when nothing is kept."""
+    lines, boxes = [], []
+    for raw, box in ocr_lines:
+        text = " ".join(raw.split())
         if sum(c.isalpha() for c in text) >= 2:
             lines.append(text)
-    return " ".join(lines), len(lines)
+            boxes.append(box)
+    if not boxes:
+        return "", 0, None
+    union = (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
+    return " ".join(lines), len(lines), union
 
 
 def looks_turkish(text):
@@ -335,7 +344,7 @@ class Pipeline(threading.Thread):
                 continue
             frame = capturer.grab(hwnd, box)
             t_ocr = time.perf_counter()
-            text, n_lines = extract_text(ocr.lines(frame))
+            text, n_lines, text_box = extract_text(ocr.read(frame))
             ocr_ms = (time.perf_counter() - t_ocr) * 1000
             self.post("status", f"Çalışıyor · OCR {ocr_ms:.0f} ms")
 
@@ -366,7 +375,14 @@ class Pipeline(threading.Thread):
                     done = time.perf_counter()
                     timing = (f"ilk görülme→ekranda {1000 * (done - first_seen):.0f} ms "
                               f"(OCR {ocr_ms:.0f} ms, çeviri {1000 * (done - t_tr):.0f} ms, {origin})")
-                    self.post("show", candidate, translated, timing, n_lines, frame)
+                    # Where the English text sits, in screen pixels relative to the region (the
+                    # frame can be at a higher resolution than the screen, e.g. Retina).
+                    text_rel = None
+                    if text_box:
+                        sx, sy = frame.width / w, frame.height / h
+                        text_rel = (text_box[0] / sx, text_box[1] / sy,
+                                    (text_box[2] - text_box[0]) / sx, (text_box[3] - text_box[1]) / sy)
+                    self.post("show", candidate, translated, timing, n_lines, frame, text_rel)
                     log(f"{timing} | {candidate!r} -> {translated!r}")
                     shown_src, candidate, candidate_reads = candidate, "", 0
 
@@ -379,19 +395,27 @@ TEXT_COLOR = (246, 244, 238)
 _fonts = {}
 
 
-def subtitle_font(px):
-    if px not in _fonts:
-        for path in plat.FONT_FILES:
-            if os.path.exists(path):
-                _fonts[px] = ImageFont.truetype(path, px)
-                try:  # variable system fonts (macOS SF): use the semibold instance
-                    _fonts[px].set_variation_by_name("Semibold")
+def subtitle_font(px, font_file=None):
+    """The chosen font file, else the platform's UI font (semibold when it is a variable font)."""
+    key = (px, font_file)
+    if key not in _fonts:
+        for path in ([font_file] if font_file else []) + plat.FONT_FILES:
+            if not path or not os.path.exists(path):
+                continue
+            try:
+                font = ImageFont.truetype(path, px)
+            except OSError:
+                continue
+            if path != font_file:
+                try:
+                    font.set_variation_by_name("Semibold")
                 except Exception:
                     pass
-                break
+            _fonts[key] = font
+            break
         else:
-            _fonts[px] = ImageFont.load_default()
-    return _fonts[px]
+            _fonts[key] = ImageFont.load_default()
+    return _fonts[key]
 
 
 def wrap_balanced(text, font, max_width):
@@ -418,12 +442,18 @@ def wrap_balanced(text, font, max_width):
     return wrap(hi)
 
 
-def render_subtitle(text, width, min_height, font_px, background):
-    """Text with a soft shadow on a blurred, darkened copy of the game frame behind it."""
-    font = subtitle_font(font_px)
-    pad_x, pad_y = round(font_px * 1.1), round(font_px * 0.45)
+def layout_subtitle(text, width, font_px, font_file=None, tight=False):
+    """(font, padding x, padding y, line height, lines) for text set at font_px inside width."""
+    font = subtitle_font(font_px, font_file)
+    pad_x = round(font_px * (0.45 if tight else 1.1))
+    pad_y = round(font_px * (0.2 if tight else 0.45))
     line_h = round(font_px * 1.3)
-    lines = wrap_balanced(text, font, width - 2 * pad_x)
+    return font, pad_x, pad_y, line_h, wrap_balanced(text, font, max(10, width - 2 * pad_x))
+
+
+def render_subtitle(text, width, min_height, font_px, background, font_file=None, tight=False):
+    """Text with a soft shadow on a blurred, darkened copy of the game frame behind it."""
+    font, pad_x, pad_y, line_h, lines = layout_subtitle(text, width, font_px, font_file, tight)
     height = max(min_height, line_h * len(lines) + 2 * pad_y)
 
     if background is not None:
@@ -452,6 +482,38 @@ def render_subtitle(text, width, min_height, font_px, background):
     return img
 
 
+def fit_over_text(text, region, text_rel, font_px, font_file, frame):
+    """Place the translation over the English text's own box: (image, x, y).
+
+    Turkish usually runs longer than the English, so the font first shrinks (to 70%) and the box
+    then widens around its centre, never past the region."""
+    rx, ry, rw, rh = region
+    tx, ty, tw, th = text_rel
+    margin_x, margin_y = round(font_px * 0.5), round(font_px * 0.25)
+    box_w, box_h = round(tw) + 2 * margin_x, round(th) + 2 * margin_y
+    centre_x, bottom = rx + tx + tw / 2, ry + ty + th + margin_y
+    choice = None
+    for width in (box_w, round(box_w * 1.3), rw):
+        width = min(max(width, box_w), rw)
+        for px in range(font_px, max(9, round(font_px * 0.7)) - 1, -1):
+            _, _, pad_y, line_h, lines = layout_subtitle(text, width, px, font_file, tight=True)
+            if line_h * len(lines) + 2 * pad_y <= box_h:
+                choice = (width, px)
+                break
+        if choice:
+            break
+    width, px = choice or (rw, max(9, round(font_px * 0.7)))
+    left = round(min(max(centre_x - width / 2, rx), rx + rw - width))
+
+    background = None
+    if frame is not None:
+        sx, sy = frame.width / rw, frame.height / rh
+        crop = ((left - rx) * sx, max(0, (bottom - box_h - ry) * sy), (left - rx + width) * sx, (bottom - ry) * sy)
+        background = frame.crop(tuple(round(v) for v in crop))
+    img = render_subtitle(text, width, box_h, px, background, font_file, tight=True)
+    return img, left, round(bottom - img.height)
+
+
 class Overlay:
     BG = "#18181c"
 
@@ -464,6 +526,7 @@ class Overlay:
         self.label.pack(fill="both", expand=True)
         self.photo = None
         self.background = None
+        self.text_rel = None
         # Click-through, never focused, and kept out of screen capture so the OCR never reads
         # our own text back.
         self.handle = plat.prepare_overlay(self.win)
@@ -471,21 +534,21 @@ class Overlay:
         self.box = None
         self.text = ""
         self.hidden_by_user = False
-        self.font_size, self.placement = 20, "cover"
+        self.font_size, self.placement, self.font_file = 20, "cover", None
 
     def set_capturable(self, capturable):
         return plat.set_capturable(self.handle, capturable)
 
-    def configure(self, font_size, placement):
-        self.font_size, self.placement = font_size, placement
+    def configure(self, font_size, placement, font_file=None):
+        self.font_size, self.placement, self.font_file = font_size, placement, font_file
         self._place()
 
     def move(self, box):
         self.box = box
         self._place()
 
-    def show(self, text, background=None):
-        self.text, self.background = text, background
+    def show(self, text, background=None, text_rel=None):
+        self.text, self.background, self.text_rel = text, background, text_rel
         self._place()
 
     def hide(self):
@@ -502,17 +565,22 @@ class Overlay:
             return
         x, y, w, h = self.box
         font_px = plat.font_px(self.handle, self.font_size)
-        # In cover mode the box is at least as tall as the region, so the original can't peek out.
-        img = render_subtitle(self.text, w, h if self.placement == "cover" else 0, font_px, self.background)
-        height = img.height
-        top = y + h - height if self.placement == "cover" else y - height - 6
+        if self.placement == "match" and self.text_rel:
+            img, left, top = fit_over_text(self.text, self.box, self.text_rel, font_px, self.font_file,
+                                           self.background)
+        else:
+            # In cover mode the box is at least as tall as the region, so the original can't peek out.
+            img = render_subtitle(self.text, w, h if self.placement == "cover" else 0, font_px,
+                                  self.background, self.font_file)
+            left = x
+            top = y + h - img.height if self.placement == "cover" else y - img.height - 6
         self.photo = ImageTk.PhotoImage(img)
         self.label.configure(image=self.photo)
-        self.win.geometry(f"{w}x{height}+{x}+{max(0, top)}")
+        self.win.geometry(f"{img.width}x{img.height}+{left}+{max(0, top)}")
         radius = max(8, font_px // 2)
         self.win.deiconify()
         self.win.lift()
-        plat.round_corners(self.handle, w, height, radius)
+        plat.round_corners(self.handle, img.width, img.height, radius)
 
 
 class RegionPicker:
@@ -581,9 +649,20 @@ class App:
         self.root.title(f"RemoteSub {VERSION}")
         self.root.attributes("-topmost", True)
         self.root.resizable(False, False)
+        sv_ttk.set_theme("dark")
+        # sv_ttk applies its colours on <<ThemeChanged>>, which never arrived with Tk 8.6.15 and left
+        # the window half light; apply them directly.
+        self.root.tk.call("configure_colors")
+        style = ttk.Style()
+        style.configure("Title.TLabel", font=(plat.UI_FONT, 16, "bold"))
+        style.configure("Muted.TLabel", foreground=MUTED)
+        style.configure("Translation.TLabel", font=(plat.UI_FONT, 11, "bold"))
+        style.configure("Big.Accent.TButton", font=(plat.UI_FONT, 11, "bold"), padding=(10, 8))
+        style.configure("Big.TButton", font=(plat.UI_FONT, 11, "bold"), padding=(10, 8))
         self.overlay = Overlay(self.root)
         self.pipeline = None  # started once setup is complete
         self._build_ui()
+        plat.dark_title_bar(self.root)
         self._apply_profile()
         plat.start_hotkeys(HOTKEY_LETTERS, lambda hid: self.events.put(("hotkey", hid)), log)
         self.root.protocol("WM_DELETE_WINDOW", self.root.destroy)
@@ -729,9 +808,11 @@ class App:
         self.profile_var.set(self.cfg["last_profile"])
         self.font_var.set(p.get("font_size", 20))
         self.placement_var.set(PLACEMENTS[p.get("placement", "cover")])
-        self.region_label.configure(text="Bölge: kayıtlı" if p.get("region") else "Bölge: seçilmedi")
-        self.dictionary_var.set(f"Sözlük: {p['dictionary']}" if p.get("dictionary") else "Sözlük: yok")
-        self.overlay.configure(p.get("font_size", 20), p.get("placement", "cover"))
+        self.region_var.set("kayıtlı" if p.get("region") else "seçilmedi")
+        self.dictionary_var.set(p["dictionary"] if p.get("dictionary") else "yok · her satır modele gider")
+        font_file = self.profile_font_path(p)
+        self.typeface_var.set(os.path.splitext(os.path.basename(font_file))[0] if font_file else "Sistem yazı tipi")
+        self.overlay.configure(p.get("font_size", 20), p.get("placement", "cover"), font_file)
 
     def _select_profile(self, _=None):
         self.cfg["last_profile"] = self.profile_var.get()
@@ -760,6 +841,37 @@ class App:
             self.cfg["last_profile"] = next(iter(self.cfg["profiles"]))
             save_config(self.cfg)
             self._apply_profile()
+
+    def profile_font_path(self, profile):
+        name = profile.get("font_file")
+        path = os.path.join(FONT_DIR, name) if name else None
+        return path if path and os.path.exists(path) else None
+
+    def choose_font(self):
+        """Use a font file (.ttf/.otf) for this profile's subtitles, e.g. the game's own typeface."""
+        path = filedialog.askopenfilename(parent=self.root, title="Yazı tipi dosyası",
+                                          filetypes=[("Yazı tipi", "*.ttf *.otf *.ttc"), ("Tümü", "*.*")])
+        if not path:
+            return
+        try:
+            font = ImageFont.truetype(path, 24)
+        except OSError as e:
+            messagebox.showerror("Yazı tipi", f"Yazı tipi açılamadı: {e}", parent=self.root)
+            return
+        # The translation is Turkish: warn when the font can't draw its letters.
+        missing = [c for c in "ğĞışŞİçÇöÖüÜ" if font.getmask(c).getbbox() is None]
+        if missing and not messagebox.askyesno(
+                "Yazı tipi", f"Bu yazı tipinde şu harfler yok: {' '.join(missing)}\nYine de kullanılsın mı?",
+                parent=self.root):
+            return
+        os.makedirs(FONT_DIR, exist_ok=True)
+        name = os.path.basename(path)
+        if os.path.abspath(path) != os.path.abspath(os.path.join(FONT_DIR, name)):
+            shutil.copy2(path, os.path.join(FONT_DIR, name))
+        self._update_profile(font_file=name)
+
+    def reset_font(self):
+        self._update_profile(font_file=None)
 
     def choose_dictionary(self):
         """Attach a pre-translated dictionary (JSON: source line -> translation) to this profile."""
@@ -829,71 +941,107 @@ class App:
             self.pipeline.active.clear()
             self.overlay.hide()
             self.status_var.set("Durduruldu")
-        label = "Durdur" if active else "Başlat"
-        self.toggle_btn.configure(text=f"{label}  ({hotkey_label('T')})")
+        label = "Çeviriyi durdur" if active else "Çeviriyi başlat"
+        self.toggle_btn.configure(text=f"{label}  ·  {hotkey_label('T')}",
+                                  style="Big.TButton" if active else "Big.Accent.TButton")
 
     def _build_ui(self):
-        top = ttk.Frame(self.root, padding=(10, 10, 10, 0))
-        top.grid(sticky="we")
-        self.connect_btn = ttk.Button(top, text="PS5'e bağlan", command=self.connect, state="disabled")
-        self.connect_btn.grid(row=0, column=0, sticky="w")
-        self.conn_var = tk.StringVar()
-        ttk.Label(top, textvariable=self.conn_var, foreground="#555", wraplength=200).grid(
-            row=0, column=1, sticky="w", padx=8)
-        self.setup_btn = ttk.Button(top, text="Kurulum", command=self.open_setup)
-        self.update_btn = ttk.Button(top, command=self.install_update)
-        self.update_btn.grid(row=1, column=0, columnspan=3, sticky="we", pady=(8, 0))
+        outer = ttk.Frame(self.root, padding=16)
+        outer.grid(sticky="nsew")
+        outer.columnconfigure(0, weight=1)
+
+        header = ttk.Frame(outer)
+        header.grid(row=0, column=0, sticky="we")
+        header.columnconfigure(0, weight=1)
+        ttk.Label(header, text="RemoteSub", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(header, text=f"sürüm {VERSION}", style="Muted.TLabel").grid(row=1, column=0, sticky="w")
+        self.setup_btn = ttk.Button(header, text="Kurulum", command=self.open_setup)
+        self.setup_btn.grid(row=0, column=1, rowspan=2, sticky="e")
+        self.update_btn = ttk.Button(outer, style="Accent.TButton", command=self.install_update)
+        self.update_btn.grid(row=1, column=0, sticky="we", pady=(12, 0))
         self.update_btn.grid_remove()  # shown when a newer release is found
-        self.setup_btn.grid(row=0, column=2, sticky="e")
-        top.columnconfigure(1, weight=1)
 
-        f = ttk.Frame(self.root, padding=10)
-        f.grid()
-        ttk.Label(f, text="Oyun profili:").grid(row=0, column=0, sticky="w")
+        # connection
+        conn = ttk.LabelFrame(outer, text="PS5", padding=12)
+        conn.grid(row=2, column=0, sticky="we", pady=(14, 0))
+        conn.columnconfigure(0, weight=1)
+        self.conn_var = tk.StringVar(value="Bağlı değil")
+        ttk.Label(conn, textvariable=self.conn_var, style="Muted.TLabel", wraplength=260).grid(
+            row=0, column=0, sticky="w")
+        self.connect_btn = ttk.Button(conn, text="Bağlan", command=self.connect, state="disabled")
+        self.connect_btn.grid(row=0, column=1, sticky="e", padx=(8, 0))
+
+        # profile: game, region, dictionary
+        prof = ttk.LabelFrame(outer, text="Oyun profili", padding=12)
+        prof.grid(row=3, column=0, sticky="we", pady=(12, 0))
+        prof.columnconfigure(1, weight=1)
         self.profile_var = tk.StringVar()
-        self.profile_box = ttk.Combobox(f, textvariable=self.profile_var, state="readonly", width=24)
-        self.profile_box.grid(row=0, column=1, sticky="we", padx=4)
+        self.profile_box = ttk.Combobox(prof, textvariable=self.profile_var, state="readonly")
+        self.profile_box.grid(row=0, column=0, columnspan=2, sticky="we")
         self.profile_box.bind("<<ComboboxSelected>>", self._select_profile)
-        ttk.Button(f, text="Yeni", width=6, command=self._new_profile).grid(row=0, column=2)
-        ttk.Button(f, text="Sil", width=5, command=self._delete_profile).grid(row=0, column=3, padx=(4, 0))
+        ttk.Button(prof, text="Yeni", command=self._new_profile).grid(row=0, column=2, padx=(8, 0))
+        ttk.Button(prof, text="Sil", command=self._delete_profile).grid(row=0, column=3, padx=(6, 0))
 
-        ttk.Button(f, text=f"Bölge seç  ({hotkey_label('R')})", command=self.pick_region).grid(
-            row=1, column=0, columnspan=2, sticky="we", pady=(8, 0))
-        self.region_label = ttk.Label(f)
-        self.region_label.grid(row=1, column=2, columnspan=2, sticky="w", padx=4, pady=(8, 0))
+        ttk.Label(prof, text="Altyazı bölgesi").grid(row=1, column=0, sticky="w", pady=(12, 0))
+        self.region_var = tk.StringVar()
+        ttk.Label(prof, textvariable=self.region_var, style="Muted.TLabel").grid(
+            row=1, column=1, sticky="w", padx=8, pady=(12, 0))
+        ttk.Button(prof, text=f"Seç  ·  {hotkey_label('R')}", command=self.pick_region).grid(
+            row=1, column=2, columnspan=2, sticky="we", pady=(12, 0))
 
-        self.toggle_btn = ttk.Button(f, state="disabled",
-                                     command=lambda: self.set_active(not self.pipeline.active.is_set()))
-        self.toggle_btn.grid(row=2, column=0, columnspan=4, sticky="we", pady=8)
+        ttk.Label(prof, text="Sözlük").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        self.dictionary_var = tk.StringVar()
+        ttk.Label(prof, textvariable=self.dictionary_var, style="Muted.TLabel", wraplength=170).grid(
+            row=2, column=1, sticky="w", padx=8, pady=(8, 0))
+        ttk.Button(prof, text="Seç…", command=self.choose_dictionary).grid(
+            row=2, column=2, columnspan=2, sticky="we", pady=(8, 0))
 
-        ttk.Label(f, text="Yazı boyutu:").grid(row=3, column=0, sticky="w")
-        self.font_var = tk.IntVar()
-        ttk.Spinbox(f, from_=10, to=60, textvariable=self.font_var, width=5,
-                    command=lambda: self._update_profile(font_size=self.font_var.get())).grid(
-            row=3, column=1, sticky="w", padx=4)
-        ttk.Label(f, text="Konum:").grid(row=4, column=0, sticky="w", pady=(4, 0))
+        # appearance of the translation
+        look = ttk.LabelFrame(outer, text="Görünüm", padding=12)
+        look.grid(row=4, column=0, sticky="we", pady=(12, 0))
+        look.columnconfigure(1, weight=1)
+        ttk.Label(look, text="Konum").grid(row=0, column=0, sticky="w")
         self.placement_var = tk.StringVar()
-        placement = ttk.Combobox(f, textvariable=self.placement_var, state="readonly", width=24,
+        placement = ttk.Combobox(look, textvariable=self.placement_var, state="readonly",
                                  values=list(PLACEMENTS.values()))
-        placement.grid(row=4, column=1, columnspan=3, sticky="w", padx=4, pady=(4, 0))
+        placement.grid(row=0, column=1, columnspan=3, sticky="we", padx=(8, 0))
         placement.bind("<<ComboboxSelected>>", lambda e: self._update_profile(
             placement=next(k for k, v in PLACEMENTS.items() if v == self.placement_var.get())))
 
-        self.dictionary_var = tk.StringVar()
-        ttk.Label(f, textvariable=self.dictionary_var).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
-        ttk.Button(f, text="Sözlük…", command=self.choose_dictionary).grid(
-            row=5, column=2, columnspan=2, sticky="e", pady=(4, 0))
+        ttk.Label(look, text="Boyut").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        self.font_var = tk.IntVar()
+        size = ttk.Spinbox(look, from_=10, to=60, textvariable=self.font_var, width=6,
+                           command=lambda: self._update_profile(font_size=self.font_var.get()))
+        size.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
+        size.bind("<Return>", lambda e: self._update_profile(font_size=self.font_var.get()))
+        size.bind("<FocusOut>", lambda e: self._update_profile(font_size=self.font_var.get()))
 
-        ttk.Separator(f).grid(row=6, column=0, columnspan=4, sticky="we", pady=8)
+        ttk.Label(look, text="Yazı tipi").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        self.typeface_var = tk.StringVar()
+        ttk.Label(look, textvariable=self.typeface_var, style="Muted.TLabel", wraplength=150).grid(
+            row=2, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
+        ttk.Button(look, text="Seç…", command=self.choose_font).grid(row=2, column=2, pady=(8, 0))
+        ttk.Button(look, text="Varsayılan", command=self.reset_font).grid(row=2, column=3, padx=(6, 0), pady=(8, 0))
+
+        self.toggle_btn = ttk.Button(outer, state="disabled", style="Big.Accent.TButton",
+                                     command=lambda: self.set_active(not self.pipeline.active.is_set()))
+        self.toggle_btn.grid(row=5, column=0, sticky="we", pady=(16, 0))
+
+        # what was read and translated last
+        last = ttk.LabelFrame(outer, text="Son çeviri", padding=12)
+        last.grid(row=6, column=0, sticky="we", pady=(14, 0))
+        last.columnconfigure(0, weight=1)
         self.status_var = tk.StringVar(value="Durduruldu")
-        ttk.Label(f, textvariable=self.status_var, foreground="#555").grid(row=7, column=0, columnspan=4, sticky="w")
+        ttk.Label(last, textvariable=self.status_var, style="Muted.TLabel", wraplength=380).grid(
+            row=0, column=0, sticky="w")
         self.src_var, self.dst_var, self.timing_var = tk.StringVar(), tk.StringVar(), tk.StringVar()
-        ttk.Label(f, textvariable=self.src_var, wraplength=380, foreground="#777").grid(
-            row=8, column=0, columnspan=4, sticky="w", pady=(6, 0))
-        ttk.Label(f, textvariable=self.dst_var, wraplength=380, font=(plat.UI_FONT, 10, "bold")).grid(
-            row=9, column=0, columnspan=4, sticky="w")
-        ttk.Label(f, textvariable=self.timing_var, foreground="#555").grid(row=10, column=0, columnspan=4, sticky="w")
-        self.toggle_btn.configure(text=f"Başlat  ({hotkey_label('T')})")
+        ttk.Label(last, textvariable=self.src_var, style="Muted.TLabel", wraplength=380).grid(
+            row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(last, textvariable=self.dst_var, style="Translation.TLabel", wraplength=380).grid(
+            row=2, column=0, sticky="w", pady=(2, 0))
+        ttk.Label(last, textvariable=self.timing_var, style="Muted.TLabel", wraplength=380).grid(
+            row=3, column=0, sticky="w", pady=(6, 0))
+        self.toggle_btn.configure(text=f"Çeviriyi başlat  ·  {hotkey_label('T')}")
 
     def _pump(self):
         try:
@@ -906,8 +1054,8 @@ class App:
                 elif kind == "move":
                     self.overlay.move(args[0])
                 elif kind == "show":
-                    src, dst, timing, n_lines, frame = args
-                    self.overlay.show(dst, frame)
+                    src, dst, timing, n_lines, frame, text_rel = args
+                    self.overlay.show(dst, frame, text_rel)
                     self.src_var.set(src)
                     self.dst_var.set(dst)
                     self.timing_var.set(timing)

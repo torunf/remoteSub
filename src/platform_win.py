@@ -144,6 +144,14 @@ def prepare_overlay(win):
     return hwnd
 
 
+def dark_title_bar(win):
+    """Match the title bar to the dark window (Windows 10 2004+ / 11)."""
+    win.update_idletasks()
+    value = ctypes.c_int(1)
+    ctypes.windll.dwmapi.DwmSetWindowAttribute(user32.GetParent(win.winfo_id()), 20,  # IMMERSIVE_DARK_MODE
+                                               ctypes.byref(value), ctypes.sizeof(value))
+
+
 def make_floating(win):
     pass  # "-topmost" already puts it over a full-screen chiaki-ng on Windows
 

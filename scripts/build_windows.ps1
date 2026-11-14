@@ -18,7 +18,7 @@ Set-Content -Path src\_version.py -Value "VERSION = `"$Version`"" -Encoding asci
 $exclude = 'platform_mac', 'torch', 'torchvision', 'tensorrt', 'paddle', 'openvino', 'MNN', 'matplotlib', 'scipy', 'pandas', 'IPython' |
     ForEach-Object { '--exclude-module', $_ }
 python -m PyInstaller --noconfirm --clean --windowed --name RemoteSub --paths src `
-    --collect-all rapidocr --collect-data certifi --hidden-import oneocr @exclude `
+    --collect-all rapidocr --collect-data certifi --collect-data sv_ttk --hidden-import oneocr @exclude `
     --distpath dist --workpath build src\remotesub.py
 if ($LASTEXITCODE) { throw "PyInstaller failed" }
 

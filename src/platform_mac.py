@@ -204,6 +204,10 @@ def prepare_overlay(win):
     return ns
 
 
+def dark_title_bar(win):
+    pass  # macOS draws the title bar from the system appearance
+
+
 def make_floating(win):
     """Let an interactive Tk window (the region picker) appear over a full-screen chiaki-ng."""
     ns = _nswindow(win)
