@@ -19,7 +19,7 @@ Her şey bilgisayarda çalışır; altyazı metni internete gönderilmez.
 | | Dosya | Not |
 |---|---|---|
 | Windows 10/11 (x64) | `RemoteSub-Setup-<sürüm>.exe` | Yönetici izni ister |
-| macOS 13+ (Apple Silicon) | `RemoteSub-<sürüm>.pkg` | İmzasız: ilk açılışta *Sistem Ayarları → Gizlilik ve Güvenlik → Yine de Aç* |
+| macOS 13+ (Apple Silicon) | `RemoteSub-<sürüm>.pkg` | Developer ID ile imzalı ve Apple onaylı (notarized) |
 
 Kurulum dosyası **chiaki-ng**'yi de içinde getirir ve kurar. Kurulum bitince RemoteSub kurulum
 penceresiyle açılır ve kalan adımları yürütür:
@@ -84,4 +84,6 @@ python src/remotesub.py --setup          # kurulum penceresini her durumda göst
 - Windows'ta ekran yakalandığı için altyazı bölgesinde chiaki-ng görünür olmalı. Mac'te chiaki-ng
   penceresi doğrudan yakalanır; üstünde başka pencere olması sorun değildir.
 - OneOCR Microsoft'a aittir ve pakete konmaz; çalışırken Windows'un Ekran Alıntısı Aracı'ndan kopyalanır.
-- **macOS sürümü henüz gerçek bir Mac'te denenmedi**; yalnızca GitHub Actions'ta derleniyor.
+- macOS paketi CI'da "Developer ID: Furkan Torun" ile imzalanır, Apple'a onaylatılır ve onay pakete
+  iliştirilir. Gerekli sertifika ve anahtarlar repo secret'larındadır (`MACOS_*`, `ASC_*`); bunlar yoksa
+  derleme ad-hoc imzayla devam eder.
