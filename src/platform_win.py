@@ -411,6 +411,10 @@ def relaunch_after_update():
 
 # ---------------------------------------------------------------- permissions (none needed)
 
+def capture_allowed():
+    return True
+
+
 def permissions_ok():
     return True, ""
 

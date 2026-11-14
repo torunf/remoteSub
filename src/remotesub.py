@@ -247,6 +247,7 @@ class Pipeline(threading.Thread):
         candidate, candidate_reads, first_seen = "", 0, 0.0
         empty_reads = 0
         last_box = None
+        allowed, next_permission_check = False, 0.0
 
         while True:
             if not self.active.is_set():
@@ -259,6 +260,14 @@ class Pipeline(threading.Thread):
                 time.sleep(0.05)
                 continue
             cycle_start = time.perf_counter()
+
+            # Without Screen Recording access macOS shows its prompt on every capture attempt.
+            if cycle_start >= next_permission_check:
+                allowed, next_permission_check = plat.capture_allowed(), cycle_start + 10.0
+            if not allowed:
+                self.post("status", "Ekran Kaydı izni yok · Kurulum → İzinler → Kur, sonra uygulamayı yeniden aç")
+                time.sleep(1.0)
+                continue
 
             if hwnd is None or not plat.window_valid(hwnd) or cycle_start >= next_find:
                 hwnd, next_find = plat.find_chiaki_window(), cycle_start + 1.0

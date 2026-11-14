@@ -512,6 +512,12 @@ def _screencapturekit_allowed():
     return out["allowed"], out["error"]
 
 
+def capture_allowed():
+    """Cheap check for the capture loop. Unlike capturing (or asking ScreenCaptureKit) it never
+    makes macOS show its permission prompt, which otherwise popped up on every frame."""
+    return bool(Quartz.CGPreflightScreenCaptureAccess()) or _other_window_titles_visible()
+
+
 def screen_capture_allowed():
     # CGPreflightScreenCaptureAccess kept answering False on macOS 27 after the user had allowed
     # RemoteSub and relaunched it, so ScreenCaptureKit and window titles serve as other opinions.
@@ -537,6 +543,10 @@ def permissions_ok():
 
 
 def request_permissions(report):
+    # A Screen Recording entry left over from an earlier (differently signed) RemoteSub build keeps
+    # matching the bundle id in System Settings while macOS denies the current build, which then
+    # asks again on every capture. Start from a clean entry.
+    run(["tccutil", "reset", "ScreenCapture", "com.torunf.remotesub"])
     Quartz.CGRequestScreenCaptureAccess()
     _accessibility_trusted(prompt=True)
     run(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"])
