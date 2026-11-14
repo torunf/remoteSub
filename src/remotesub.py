@@ -19,11 +19,12 @@ import threading
 import time
 import tkinter as tk
 import urllib.request
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, simpledialog, ttk
 
 import sv_ttk
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
+import dialogs
 import setup_steps
 import updater
 from dictionary import Dictionary
@@ -748,9 +749,6 @@ class App:
 
     def install_update(self):
         version = self.update["version"]
-        if not messagebox.askyesno("Güncelleme", f"RemoteSub {version} indirilip kurulsun mu?\n"
-                                   "Kurulumdan sonra uygulama yeniden açılır.", parent=self.root):
-            return
         self.update_btn.configure(state="disabled")
 
         def work():
@@ -852,7 +850,7 @@ class App:
         if len(self.cfg["profiles"]) == 1:
             return
         name = self.cfg["last_profile"]
-        if messagebox.askyesno("Profili sil", f"'{name}' silinsin mi?", parent=self.root):
+        if self.ask("Profili sil", f"'{name}' profili silinsin mi?", yes="Sil"):
             del self.cfg["profiles"][name]
             self.cfg["last_profile"] = next(iter(self.cfg["profiles"]))
             save_config(self.cfg)
@@ -872,13 +870,13 @@ class App:
         try:
             font = ImageFont.truetype(path, 24)
         except OSError as e:
-            messagebox.showerror("Yazı tipi", f"Yazı tipi açılamadı: {e}", parent=self.root)
+            self.inform("Yazı tipi", f"Yazı tipi açılamadı: {e}")
             return
         # The translation is Turkish: warn when the font can't draw its letters.
         missing = [c for c in "ğĞışŞİçÇöÖüÜ" if font.getmask(c).getbbox() is None]
-        if missing and not messagebox.askyesno(
+        if missing and not self.ask(
                 "Yazı tipi", f"Bu yazı tipinde şu harfler yok: {' '.join(missing)}\nYine de kullanılsın mı?",
-                parent=self.root):
+                yes="Kullan"):
             return
         os.makedirs(FONT_DIR, exist_ok=True)
         name = os.path.basename(path)
@@ -889,6 +887,12 @@ class App:
     def reset_font(self):
         self._update_profile(font_file=None)
 
+    def ask(self, title, message, yes="Evet"):
+        return dialogs.ask(self.root, title, message, yes=yes, dark_title_bar=plat.dark_title_bar)
+
+    def inform(self, title, message):
+        dialogs.inform(self.root, title, message, dark_title_bar=plat.dark_title_bar)
+
     def choose_dictionary(self):
         """Attach a pre-translated dictionary (JSON: source line -> translation) to this profile."""
         path = filedialog.askopenfilename(parent=self.root, title="Sözlük dosyası (JSON)",
@@ -898,7 +902,7 @@ class App:
         try:
             count = len(Dictionary(path))
         except Exception as e:
-            messagebox.showerror("Sözlük", f"Dosya okunamadı: {e}", parent=self.root)
+            self.inform("Sözlük", f"Dosya okunamadı: {e}")
             return
         os.makedirs(DICTIONARY_DIR, exist_ok=True)
         name = os.path.basename(path)
@@ -914,8 +918,7 @@ class App:
     def pick_region(self):
         hwnd = plat.find_chiaki_window()
         if not hwnd:
-            messagebox.showwarning("RemoteSub", "chiaki-ng penceresi bulunamadı. Önce PS5 yayınını açın.",
-                                   parent=self.root)
+            self.inform("RemoteSub", "chiaki-ng penceresi bulunamadı. Önce PS5 yayınını açın.")
             return
         video = video_rect(plat.client_rect(hwnd))
         RegionPicker(self.root, video, self.current_profile().get("region"), self._region_chosen)
