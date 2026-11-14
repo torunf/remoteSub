@@ -228,6 +228,33 @@ def font_px(hwnd, points):
     return round(points * (user32.GetDpiForWindow(hwnd) or 96) / 72)
 
 
+class OverlayWindow:
+    """The translation overlay: a click-through Tk toplevel drawn with per-pixel alpha."""
+
+    def __init__(self, root):
+        import tkinter as tk
+        self.win = tk.Toplevel(root)
+        self.win.overrideredirect(True)
+        self.win.attributes("-topmost", True)
+        self.win.configure(bg=OVERLAY_BG)
+        self.label = tk.Label(self.win, bg=OVERLAY_BG, bd=0, highlightthickness=0)
+        self.label.pack(fill="both", expand=True)
+        self.hwnd = prepare_overlay(self.win)
+        self.win.withdraw()
+
+    def font_px(self, points):
+        return font_px(self.hwnd, points)
+
+    def show(self, img, x, y):
+        present_overlay(self.win, self.label, self.hwnd, img, x, y)
+
+    def hide(self):
+        self.win.withdraw()
+
+    def set_capturable(self, capturable):
+        return set_capturable(self.hwnd, capturable)
+
+
 # ---------------------------------------------------------------- hotkeys
 
 def start_hotkeys(keys, on_hotkey, log):

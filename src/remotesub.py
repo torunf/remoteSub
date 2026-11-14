@@ -532,19 +532,11 @@ def fit_over_text(text, region, text_rel, font_px, font_file, frame, bg_mode="bl
 
 class Overlay:
     def __init__(self, root):
-        self.win = tk.Toplevel(root)
-        self.win.overrideredirect(True)
-        self.win.attributes("-topmost", True)
-        self.win.configure(bg=plat.OVERLAY_BG)
-        self.label = tk.Label(self.win, bg=plat.OVERLAY_BG, bd=0, highlightthickness=0)
-        self.label.pack(fill="both", expand=True)
-        self.photo = None
+        # Click-through, never focused, and kept out of screen capture so the OCR never reads
+        # our own text back (platform_win: layered Tk window, platform_mac: native NSPanel).
+        self.window = plat.OverlayWindow(root)
         self.background = None
         self.text_rel = None
-        # Click-through, never focused, and kept out of screen capture so the OCR never reads
-        # our own text back.
-        self.handle = plat.prepare_overlay(self.win)
-        self.win.withdraw()
         self.box = None
         self.text = ""
         self.hidden_by_user = False
@@ -552,7 +544,7 @@ class Overlay:
         self.bg_mode, self.dim_percent = "blur", 55
 
     def set_capturable(self, capturable):
-        return plat.set_capturable(self.handle, capturable)
+        return self.window.set_capturable(capturable)
 
     def configure(self, font_size, placement, font_file=None, bg_mode="blur", dim_percent=55):
         self.font_size, self.placement, self.font_file = font_size, placement, font_file
@@ -569,7 +561,7 @@ class Overlay:
 
     def hide(self):
         self.text = ""
-        self.win.withdraw()
+        self.window.hide()
 
     def toggle_user_hidden(self):
         self.hidden_by_user = not self.hidden_by_user
@@ -577,10 +569,10 @@ class Overlay:
 
     def _place(self):
         if not self.text or not self.box or self.hidden_by_user:
-            self.win.withdraw()
+            self.window.hide()
             return
         x, y, w, h = self.box
-        font_px = plat.font_px(self.handle, self.font_size)
+        font_px = self.window.font_px(self.font_size)
         if self.placement == "match" and self.text_rel:
             img, left, top = fit_over_text(self.text, self.box, self.text_rel, font_px, self.font_file,
                                            self.background, self.bg_mode, self.dim_percent)
@@ -592,7 +584,7 @@ class Overlay:
             left = x
             top = y + h - img.height if self.placement == "cover" else y - img.height - 6
         # Per-pixel alpha (rounded corners, a see-through background) needs platform drawing.
-        self.photo = plat.present_overlay(self.win, self.label, self.handle, img, left, max(0, top))
+        self.window.show(img, left, max(0, top))
 
 
 class RegionPicker:

@@ -9,6 +9,7 @@ Differences from Windows worth knowing:
 - Everything touching AppKit runs on the main (Tk) thread; macOS 26+ enforces this.
 """
 import glob
+import io
 import os
 import platform
 import plistlib
@@ -19,8 +20,9 @@ import threading
 import time
 
 import AppKit
+import Foundation
 import Quartz
-from PIL import Image, ImageTk
+from PIL import Image
 
 from netutil import download, github_latest_asset
 
@@ -188,21 +190,60 @@ def _nswindow(win):
     return None
 
 
-def prepare_overlay(win):
-    win.wm_attributes("-transparent", True)
-    ns = _nswindow(win)
-    if ns is None:
-        return None
-    ns.setLevel_(AppKit.NSStatusWindowLevel)
-    ns.setCollectionBehavior_(AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
-                              | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary
-                              | AppKit.NSWindowCollectionBehaviorStationary)
-    ns.setHasShadow_(False)
-    ns.setOpaque_(False)
-    ns.setBackgroundColor_(AppKit.NSColor.clearColor())
-    ns.setIgnoresMouseEvents_(True)
-    set_capturable(ns, False)
-    return ns
+class OverlayWindow:
+    """The translation overlay as a native, borderless NSPanel.
+
+    A Tk window never showed up here (macOS 27, Tk 8.6): it is raised with an ordinary orderFront,
+    which does nothing for an app that isn't active, and chiaki-ng is the active app while playing.
+    This panel is ordered in with orderFrontRegardless, floats over full-screen apps on every
+    Space, lets clicks through, never takes focus and stays out of screen capture."""
+
+    def __init__(self, root):
+        style = AppKit.NSWindowStyleMaskBorderless | AppKit.NSWindowStyleMaskNonactivatingPanel
+        panel = AppKit.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            ((0, 0), (10, 10)), style, AppKit.NSBackingStoreBuffered, False)
+        panel.setLevel_(AppKit.NSScreenSaverWindowLevel)
+        panel.setCollectionBehavior_(AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
+                                     | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary
+                                     | AppKit.NSWindowCollectionBehaviorStationary
+                                     | AppKit.NSWindowCollectionBehaviorIgnoresCycle)
+        panel.setOpaque_(False)
+        panel.setBackgroundColor_(AppKit.NSColor.clearColor())
+        panel.setHasShadow_(False)
+        panel.setIgnoresMouseEvents_(True)
+        panel.setHidesOnDeactivate_(False)
+        panel.setFloatingPanel_(True)
+        view = AppKit.NSImageView.alloc().initWithFrame_(((0, 0), (10, 10)))
+        view.setImageScaling_(AppKit.NSImageScaleAxesIndependently)
+        panel.setContentView_(view)
+        self.panel, self.view = panel, view
+        self.set_capturable(False)
+
+    def font_px(self, points):
+        # Coordinates here are points; the image is drawn one pixel per point.
+        return round(points * 96 / 72)
+
+    def show(self, img, x, y):
+        """Show an RGBA image at (x, y), top-left origin in points, like the rest of the app."""
+        buf = io.BytesIO()
+        img.save(buf, "PNG")
+        data = Foundation.NSData.dataWithBytes_length_(buf.getvalue(), buf.tell())
+        image = AppKit.NSImage.alloc().initWithData_(data)
+        image.setSize_((img.width, img.height))
+        # Cocoa's origin is the bottom-left of the primary screen.
+        primary_height = AppKit.NSScreen.screens()[0].frame().size.height
+        frame = ((x, primary_height - y - img.height), (img.width, img.height))
+        self.panel.setFrame_display_(frame, True)
+        self.view.setFrame_(((0, 0), (img.width, img.height)))
+        self.view.setImage_(image)
+        self.panel.orderFrontRegardless()
+
+    def hide(self):
+        self.panel.orderOut_(None)
+
+    def set_capturable(self, capturable):
+        self.panel.setSharingType_(AppKit.NSWindowSharingReadOnly if capturable else AppKit.NSWindowSharingNone)
+        return True
 
 
 def dark_title_bar(win):
@@ -216,33 +257,6 @@ def make_floating(win):
         ns.setLevel_(AppKit.NSStatusWindowLevel)
         ns.setCollectionBehavior_(AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
                                   | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary)
-
-
-def set_capturable(ns, capturable):
-    if ns is None:
-        return False
-    ns.setSharingType_(AppKit.NSWindowSharingReadOnly if capturable else AppKit.NSWindowSharingNone)
-    return True
-
-
-OVERLAY_BG = "systemTransparent"  # Tk on macOS: lets the image's alpha show the desktop through
-
-
-def present_overlay(win, label, ns, img, x, y):
-    """Show an RGBA image as the overlay window's content (the window itself is transparent)."""
-    photo = ImageTk.PhotoImage(img)
-    label.configure(image=photo)
-    win.geometry(f"{img.width}x{img.height}+{x}+{y}")
-    win.deiconify()
-    win.lift()
-    if ns is not None:
-        ns.setIgnoresMouseEvents_(True)  # Tk may reset it when the window is shown again
-    return photo  # the caller keeps it alive
-
-
-def font_px(ns, points):
-    # Tk on macOS lays out in points and draws images at one pixel per point.
-    return round(points * 96 / 72)
 
 
 # ---------------------------------------------------------------- hotkeys
