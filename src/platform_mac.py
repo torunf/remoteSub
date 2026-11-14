@@ -440,6 +440,35 @@ def model_memory_gb():
 LARGE_MODEL_MIN_GB = 24
 
 
+# ---------------------------------------------------------------- updates
+
+SUPPORTS_UPDATE = True
+UPDATE_ASSET_SUFFIX = ".pkg"
+UPDATE_TEAM_ID = "CPYF7YJ28K"  # only packages signed by RemoteSub's own Developer ID are installed
+APP_PATH = "/Applications/RemoteSub.app"
+
+
+def install_update(pkg_path, report):
+    """Verify a downloaded RemoteSub package and install it (macOS asks for an admin password)."""
+    signature = run(["pkgutil", "--check-signature", pkg_path]).stdout
+    if "Developer ID Installer" not in signature or f"({UPDATE_TEAM_ID})" not in signature:
+        raise RuntimeError("Güncelleme paketinin imzası RemoteSub'a ait değil")
+    if run(["spctl", "--assess", "--type", "install", pkg_path]).returncode != 0:
+        raise RuntimeError("Güncelleme paketi Apple onayından geçmemiş")
+    report("Kuruluyor… (yönetici parolası istenecek)")
+    script = (f'do shell script "/usr/sbin/installer -pkg " & quoted form of "{pkg_path}" & " -target /" '
+              "with administrator privileges")
+    result = run(["osascript", "-e", script])
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "Kurulum iptal edildi")
+
+
+def relaunch_after_update():
+    # The package's postinstall can only bring the still-running old copy to the front, so start
+    # the new one ourselves once this process has quit.
+    subprocess.Popen(["/bin/sh", "-c", f'sleep 2; open -n "{APP_PATH}"'], start_new_session=True)
+
+
 # ---------------------------------------------------------------- permissions
 
 def _accessibility_trusted(prompt=False):
@@ -463,19 +492,40 @@ def _other_window_titles_visible():
     return False
 
 
+def _screencapturekit_allowed():
+    """Ask ScreenCaptureKit for shareable content: it errors out without Screen Recording access.
+    Returns (allowed or None when unknown, error text)."""
+    try:
+        import ScreenCaptureKit as SCK
+    except ImportError:
+        return None, "ScreenCaptureKit unavailable"
+    done, out = threading.Event(), {}
+
+    def handler(content, error):
+        out["allowed"] = content is not None and error is None
+        out["error"] = str(error) if error is not None else ""
+        done.set()
+
+    SCK.SCShareableContent.getShareableContentWithCompletionHandler_(handler)
+    if not done.wait(5):
+        return None, "timeout"
+    return out["allowed"], out["error"]
+
+
 def screen_capture_allowed():
     # CGPreflightScreenCaptureAccess kept answering False on macOS 27 after the user had allowed
-    # RemoteSub and relaunched it, so window titles serve as a second opinion.
+    # RemoteSub and relaunched it, so ScreenCaptureKit and window titles serve as other opinions.
     preflight = bool(Quartz.CGPreflightScreenCaptureAccess())
     titles = _other_window_titles_visible()
+    sck, sck_error = _screencapturekit_allowed()
     try:
         os.makedirs(APP_DIR, exist_ok=True)
         with open(os.path.join(APP_DIR, "log.txt"), "a", encoding="utf-8") as f:
-            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} screen capture check: "
-                    f"preflight={preflight} other_window_titles={titles}\n")
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} screen capture check: preflight={preflight} "
+                    f"other_window_titles={titles} screencapturekit={sck} {sck_error}\n")
     except OSError:
         pass
-    return preflight or titles
+    return bool(preflight or titles or sck)
 
 
 def permissions_ok():

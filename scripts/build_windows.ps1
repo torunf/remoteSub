@@ -11,6 +11,8 @@ Set-Location $root
 
 python -m pip install -q -r requirements.txt
 if ($LASTEXITCODE) { throw "pip install failed" }
+# The version the app reports and compares against GitHub releases for updates.
+Set-Content -Path src\_version.py -Value "VERSION = `"$Version`"" -Encoding ascii
 
 # RapidOCR's optional engines would pull in PyTorch and friends; it only needs onnxruntime here.
 $exclude = 'platform_mac', 'torch', 'torchvision', 'tensorrt', 'paddle', 'openvino', 'MNN', 'matplotlib', 'scipy', 'pandas', 'IPython' |

@@ -50,6 +50,8 @@ sign_app() {  # sign_app <app> <entitlements>
 [ "$SIGN" = 1 ] && setup_keychain
 
 python3 -m pip install -q -r requirements.txt
+# The version the app reports and compares against GitHub releases for updates.
+printf 'VERSION = "%s"\n' "$VERSION" > src/_version.py
 
 python3 -m PyInstaller --noconfirm --clean --windowed --name RemoteSub --paths src \
     --osx-bundle-identifier com.torunf.remotesub \

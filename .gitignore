@@ -5,3 +5,4 @@ dist/
 *.spec
 installer/windows/redist/
 .DS_Store
+src/_version.py

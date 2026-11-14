@@ -100,8 +100,15 @@ def pull_model(url, model, report):
 # ---------------------------------------------------------------- steps
 
 class Step:
-    def __init__(self, title, check, fix):
+    def __init__(self, title, check, fix, required=True):
         self.title, self.check, self.fix = title, check, fix
+        # Optional steps show their state but never keep the user from starting the app.
+        self.required = required
+
+
+def ready(steps, results):
+    """Every required step passed."""
+    return all(ok for step, (ok, _) in zip(steps, results) if step.required)
 
 
 def build_steps(cfg, app_dir):
@@ -199,7 +206,9 @@ def build_steps(cfg, app_dir):
         Step("OCR", check_ocr, None),
     ]
     if plat.NEEDS_PERMISSIONS:
-        steps.append(Step("İzinler", plat.permissions_ok, fix_permissions))
+        # Not required: macOS 27 reported "no access" even after it was granted, which locked people
+        # out of the app. A missing permission still shows up when capturing.
+        steps.append(Step("İzinler", plat.permissions_ok, fix_permissions, required=False))
     return steps
 
 
@@ -261,9 +270,10 @@ class SetupWindow:
         for (ok, detail), (status, button), step in zip(results, self.rows, self.steps):
             status.configure(text=("✓  " if ok else "✗  ") + detail, foreground="#1a7f37" if ok else "#b42318")
             button.configure(state="disabled" if ok or not step.fix or self.busy else "normal")
-        all_ok = all(ok for ok, _ in results)
+        all_ok = ready(self.steps, results)
         self.done_btn.configure(state="normal" if all_ok and not self.busy else "disabled")
-        self.all_btn.configure(state="disabled" if all_ok or self.busy else "normal")
+        fixable = any(not ok and step.fix for step, (ok, _) in zip(self.steps, results))
+        self.all_btn.configure(state="normal" if fixable and not self.busy else "disabled")
 
     def _fix_all(self):
         self._fix([i for i, (ok, _) in enumerate(self.results) if not ok and self.steps[i].fix])
@@ -315,7 +325,7 @@ class SetupWindow:
                     self.busy = False
                     self.progress.stop()
                     self._show_results(args[0])
-                    if all(ok for ok, _ in self.results):
+                    if ready(self.steps, self.results):
                         self.message.configure(text="Her şey hazır.")
                         self.progress.configure(mode="determinate", value=100)
         except queue.Empty:
@@ -331,4 +341,4 @@ class SetupWindow:
         if self.busy:
             return
         self.win.destroy()
-        self.on_done(all(ok for ok, _ in self.results))
+        self.on_done(ready(self.steps, self.results))

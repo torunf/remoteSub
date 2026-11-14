@@ -24,7 +24,13 @@ from tkinter import messagebox, simpledialog, ttk
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageTk
 
 import setup_steps
+import updater
 from ocr_engine import OcrEngine
+
+try:
+    from _version import VERSION  # written by the build scripts
+except ImportError:
+    VERSION = "0.0.0-dev"
 
 if sys.platform == "darwin":
     import platform_mac as plat
@@ -529,7 +535,7 @@ class App:
         self.cfg = load_config()
         self.events = queue.Queue()
         self.root = tk.Tk()
-        self.root.title("RemoteSub")
+        self.root.title(f"RemoteSub {VERSION}")
         self.root.attributes("-topmost", True)
         self.root.resizable(False, False)
         self.overlay = Overlay(self.root)
@@ -540,7 +546,8 @@ class App:
         self.root.protocol("WM_DELETE_WINDOW", self.root.destroy)
         self.root.after(30, self._pump)
         # The installer starts us with --setup so the first run always walks through setup.
-        self.open_setup(show_if_ready=force_setup)
+        # After an update the package opens us with --setup again; only the first run needs it.
+        self.open_setup(show_if_ready=force_setup and not self.cfg.get("setup_completed"))
 
     # setup
     def open_setup(self, show_if_ready=True):
@@ -556,7 +563,7 @@ class App:
 
     def _setup_checked(self, steps, results, show_if_ready):
         save_config(self.cfg)  # the checks record paths, console name, Ollama URL and model
-        if all(ok for ok, _ in results) and not show_if_ready:
+        if setup_steps.ready(steps, results) and not show_if_ready:
             self._setup_done(True)
         else:
             setup_steps.SetupWindow(self.root, steps, results, self._setup_done)
@@ -567,7 +574,11 @@ class App:
         if not ready:
             self.status_var.set("Kurulum tamamlanmadı · 'Kurulum' ile devam edin")
             return
+        if not self.cfg.get("setup_completed"):
+            self.cfg["setup_completed"] = True
+            save_config(self.cfg)
         if self.pipeline is None:
+            self.check_for_update()
             self.pipeline = Pipeline(self)
             self.pipeline.start()
             self.toggle_btn.configure(state="normal")
@@ -578,6 +589,50 @@ class App:
                 self.status_var.set(f"Hazır · oyunda {hotkey_label('R')} ile altyazı bölgesini seçin")
             if self.cfg.get("auto_connect") and "--no-connect" not in sys.argv:
                 self.connect()
+
+    # updates
+    def check_for_update(self):
+        """Look for a newer release now and every few hours; offer it with a button."""
+        if not plat.SUPPORTS_UPDATE:
+            return
+
+        def check():
+            try:
+                update = updater.find_update(VERSION, plat.UPDATE_ASSET_SUFFIX)
+            except Exception as e:
+                log(f"update check failed: {e}")
+                return
+            if update:
+                self.events.put(("update_found", update))
+
+        threading.Thread(target=check, daemon=True).start()
+        self.root.after(updater.CHECK_INTERVAL_MS, self.check_for_update)
+
+    def _show_update(self, update):
+        self.update = update
+        self.update_btn.configure(text=f"Yeni sürüm {update['version']} · Güncelle", state="normal")
+        self.update_btn.grid()
+
+    def install_update(self):
+        version = self.update["version"]
+        if not messagebox.askyesno("Güncelleme", f"RemoteSub {version} indirilip kurulsun mu?\n"
+                                   "Kurulumdan sonra uygulama yeniden açılır.", parent=self.root):
+            return
+        self.update_btn.configure(state="disabled")
+
+        def work():
+            report = lambda text, fraction=None: self.events.put(("update_status", text))
+            try:
+                path = updater.download_update(self.update, report)
+                plat.install_update(path, report)
+            except Exception as e:
+                log(f"update failed: {e}")
+                self.events.put(("update_failed", str(e)))
+                return
+            log(f"updated to {version}")
+            self.events.put(("update_installed",))
+
+        threading.Thread(target=work, daemon=True).start()
 
     # PS5 connection
     def connect(self):
@@ -721,6 +776,9 @@ class App:
         ttk.Label(top, textvariable=self.conn_var, foreground="#555", wraplength=200).grid(
             row=0, column=1, sticky="w", padx=8)
         self.setup_btn = ttk.Button(top, text="Kurulum", command=self.open_setup)
+        self.update_btn = ttk.Button(top, command=self.install_update)
+        self.update_btn.grid(row=1, column=0, columnspan=3, sticky="we", pady=(8, 0))
+        self.update_btn.grid_remove()  # shown when a newer release is found
         self.setup_btn.grid(row=0, column=2, sticky="e")
         top.columnconfigure(1, weight=1)
 
@@ -790,6 +848,17 @@ class App:
                     self.overlay.hide()
                 elif kind == "conn":
                     self.conn_var.set(args[0])
+                elif kind == "update_found":
+                    self._show_update(args[0])
+                elif kind == "update_status":
+                    self.status_var.set(args[0])
+                elif kind == "update_failed":
+                    self.status_var.set(f"Güncelleme olmadı: {args[0]}")
+                    self.update_btn.configure(state="normal")
+                elif kind == "update_installed":
+                    plat.relaunch_after_update()
+                    self.root.destroy()
+                    return
                 elif kind == "conn_done":
                     self.connect_btn.configure(state="normal")
                 elif kind == "hotkey":

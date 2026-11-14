@@ -395,6 +395,20 @@ def model_memory_gb():
 LARGE_MODEL_MIN_GB = 10
 
 
+# ---------------------------------------------------------------- updates (not yet on Windows)
+
+SUPPORTS_UPDATE = False
+UPDATE_ASSET_SUFFIX = ".exe"
+
+
+def install_update(path, report):
+    raise NotImplementedError
+
+
+def relaunch_after_update():
+    pass
+
+
 # ---------------------------------------------------------------- permissions (none needed)
 
 def permissions_ok():

@@ -29,7 +29,15 @@ penceresiyle açılır ve kalan adımları yürütür:
 - **Ollama** ve **çeviri modeli**: yeterli bellek varsa `translategemma:12b` (Windows'ta ekran kartında
   10 GB, Mac'te 24 GB birleşik bellek), değilse `translategemma:4b`.
 - **OCR**: Windows'ta Ekran Alıntısı Aracı'nın OneOCR'ı (yoksa paketteki RapidOCR), Mac'te Apple Vision.
-- **İzinler** (yalnızca Mac): Ekran ve Sistem Sesi Kaydı; kısayollar için Erişilebilirlik.
+- **İzinler** (yalnızca Mac): Ekran ve Sistem Sesi Kaydı; kısayollar için Erişilebilirlik. Bu adım
+  uygulamayı başlatmayı engellemez: macOS 27 izin verilmişken bile "yok" diyebiliyor.
+
+## Güncelleme
+
+macOS'ta RemoteSub açılışta (ve birkaç saatte bir) yeni sürüm olup olmadığına bakar. Varsa kontrol
+penceresinde **Yeni sürüm … · Güncelle** düğmesi çıkar; paket indirilir, imzasının RemoteSub'ın
+Developer ID'si olduğu ve Apple onayı doğrulanır, kurulur ve uygulama yeniden açılır. Windows'ta
+henüz yok; yeni sürümü Releases'tan kurmak gerekir.
 
 ## Kullanım
 
