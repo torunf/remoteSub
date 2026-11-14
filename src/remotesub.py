@@ -536,8 +536,7 @@ class App:
         self.pipeline = None  # started once setup is complete
         self._build_ui()
         self._apply_profile()
-        threading.Thread(target=plat.hotkey_loop, daemon=True,
-                         args=(HOTKEY_LETTERS, lambda hid: self.events.put(("hotkey", hid)), log)).start()
+        plat.start_hotkeys(HOTKEY_LETTERS, lambda hid: self.events.put(("hotkey", hid)), log)
         self.root.protocol("WM_DELETE_WINDOW", self.root.destroy)
         self.root.after(30, self._pump)
         # The installer starts us with --setup so the first run always walks through setup.

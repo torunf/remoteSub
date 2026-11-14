@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import winreg
 
@@ -161,8 +162,13 @@ def font_px(hwnd, points):
 
 # ---------------------------------------------------------------- hotkeys
 
-def hotkey_loop(keys, on_hotkey, log):
-    """Global hotkeys (Ctrl+Alt+letter); blocks, so run it on its own thread. keys: {id: letter}."""
+def start_hotkeys(keys, on_hotkey, log):
+    """Global hotkeys (Ctrl+Alt+letter). keys: {id: letter}."""
+    threading.Thread(target=_hotkey_loop, args=(keys, on_hotkey, log), daemon=True).start()
+
+
+def _hotkey_loop(keys, on_hotkey, log):
+    """RegisterHotKey delivers to the registering thread's message loop, so this owns one."""
     mod = 0x0002 | 0x0001 | 0x4000  # Ctrl + Alt, no auto-repeat
     for hid, letter in keys.items():
         if not user32.RegisterHotKey(None, hid, mod, ord(letter.upper())):

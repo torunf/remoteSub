@@ -6,6 +6,7 @@ Differences from Windows worth knowing:
 - OCR is Apple's Vision framework (see ocr_engine.py).
 - chiaki-ng's settings live in the com.chiaki.Chiaki preferences domain (Qt's QSettings).
 - Screen Recording permission is required; Accessibility only for the global hotkeys.
+- Everything touching AppKit runs on the main (Tk) thread; macOS 26+ enforces this.
 """
 import glob
 import os
@@ -239,37 +240,35 @@ def font_px(ns, points):
 # macOS virtual key codes (ANSI layout); with Option held the typed character changes,
 # so match key codes rather than characters.
 _KEYCODES = {"T": 17, "R": 15, "H": 4, "S": 1}
+_monitors = []  # keep the monitors alive
 
 
-def hotkey_loop(keys, on_hotkey, log):
-    """Ctrl+Option+letter, via pynput. Needs the Accessibility permission; blocks."""
-    try:
-        from pynput import keyboard
-    except Exception as e:
-        log(f"hotkeys unavailable: {e}")
-        return
+def start_hotkeys(keys, on_hotkey, log):
+    """Ctrl+Option+letter through NSEvent monitors. Call on the main thread: macOS 26+ aborts the
+    process when keyboard-layout APIs are used off it (which is how pynput crashed RemoteSub).
+    The global monitor needs the Accessibility permission; the local one covers our own windows."""
     codes = {_KEYCODES[letter.upper()]: hid for hid, letter in keys.items()}
-    ctrl = {keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r}
-    alt = {keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r}
-    held = set()
+    wanted = AppKit.NSEventModifierFlagControl | AppKit.NSEventModifierFlagOption
+    relevant = wanted | AppKit.NSEventModifierFlagCommand | AppKit.NSEventModifierFlagShift
 
-    def press(key):
-        if key in ctrl:
-            held.add("ctrl")
-        elif key in alt:
-            held.add("alt")
-        elif {"ctrl", "alt"} <= held and getattr(key, "vk", None) in codes:
-            on_hotkey(codes[key.vk])
+    def matches(event):
+        return (event.modifierFlags() & relevant) == wanted and event.keyCode() in codes
 
-    def release(key):
-        if key in ctrl:
-            held.discard("ctrl")
-        elif key in alt:
-            held.discard("alt")
+    def on_global(event):
+        if matches(event):
+            on_hotkey(codes[event.keyCode()])
+
+    def on_local(event):
+        if matches(event):
+            on_hotkey(codes[event.keyCode()])
+            return None  # swallow it
+        return event
 
     try:
-        with keyboard.Listener(on_press=press, on_release=release) as listener:
-            listener.join()
+        _monitors.append(AppKit.NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+            AppKit.NSEventMaskKeyDown, on_global))
+        _monitors.append(AppKit.NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+            AppKit.NSEventMaskKeyDown, on_local))
     except Exception as e:
         log(f"hotkeys unavailable: {e}")
 
