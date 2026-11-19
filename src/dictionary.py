@@ -19,11 +19,20 @@ def normalize(text):
 
 
 class Dictionary:
-    def __init__(self, path):
-        with open(path, encoding="utf-8") as f:
-            raw = json.load(f)
+    def __init__(self, path=None, raw=None):
+        if path is not None:
+            with open(path, encoding="utf-8") as f:
+                raw = json.load(f)
+        raw = raw or {}
         self.pairs = {normalize(k): v for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
         self.keys = list(self.pairs)
+
+    def put(self, source, translation):
+        """Add a line, as the learned dictionary does with every new translation."""
+        key = normalize(source)
+        if key not in self.pairs:
+            self.keys.append(key)
+        self.pairs[key] = translation
 
     def __len__(self):
         return len(self.pairs)

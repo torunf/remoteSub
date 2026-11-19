@@ -55,7 +55,7 @@ printf 'VERSION = "%s"\n' "$VERSION" > src/_version.py
 
 python3 -m PyInstaller --noconfirm --clean --windowed --name RemoteSub --paths src \
     --osx-bundle-identifier com.torunf.remotesub \
-    --collect-data certifi --collect-data sv_ttk \
+    --collect-data certifi --collect-data sv_ttk --add-data src/fonts:fonts \
     --exclude-module platform_win --exclude-module oneocr --exclude-module rapidocr \
     --distpath dist --workpath build src/remotesub.py
 

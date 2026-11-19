@@ -131,8 +131,10 @@ Her şey yeşil olunca **Başla**'ya bas.
   uzunsa kutuyu genişletir.
 - **Arka plan**: *Buzlu cam* yazının arkasındaki oyunu bulanıklaştırır; *Şeffaf, karartılmış* oyunu
   görünür bırakır ve **Karartma** yüzdesi kadar karartır. Karartma arttıkça orijinal yazı daha iyi kapanır.
-- **Yazı tipi** ve **Boyut**: herhangi bir `.ttf` / `.otf` dosyası kullanılabilir. Yazı tipinde Türkçe
-  harfler yoksa RemoteSub seni uyarır.
+- **Yazı tipi** ve **Boyut**: başka bir `.ttf` / `.otf` dosyası seçmezsen altyazılar yerleşik Montserrat
+  ile yazılır (Rockstar oyunlarının yazı tipine yakındır). Yazı tipinde Türkçe harfler yoksa RemoteSub
+  seni uyarır. Boyut seçtiğin gibi kalır; alana göre büyüyüp küçülmez.
+- Çeviri, orijinal satır kaybolduktan sonra en fazla 4 saniye ya da bir sonraki satır gelene kadar ekranda kalır.
 
 ## Android TV
 
@@ -179,6 +181,10 @@ Bir profile *Sözlük*'ün yanındaki **Seç…** ile bağlanır. Her altyazı �
 küçük hataları tolere edilir. Sadece bulunamayan satırlar yapay zekâ modeline gider. *Son çeviri*
 kutusu cevabın nereden geldiğini yazar (*sözlük*, *önbellek* ya da *model*). Oynarken dosya değişirse
 (örneğin yeni satırlar çevrilirken) RemoteSub en geç 30 saniye içinde yeni halini kullanır.
+
+Modelin çevirdiği her satır ayrıca bir *öğrenilen sözlükte* tutulur (uygulama veri klasöründe
+`learned/en_tr.json`, her dil çifti için bir dosya); böylece bir satır, uygulama yeniden açılsa bile
+modele ikinci kez gitmez. TV uygulaması da aynı dosyayı aynı biçimde tutar, ikisi arasında kopyalanabilir.
 
 Oyunun kendi metinlerinden hazırlanmış bir sözlük genellikle en iyi seçenektir: anında gelir, insan
 çevirisinden geliyorsa da çok daha doğal okunur. **Oyun metinleri yayıncısına aittir; sözlükleri kendi

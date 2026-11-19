@@ -134,8 +134,10 @@ When everything is green, press **Start**.
   widening the box when the translation is longer.
 - **Background**: *Frosted glass* blurs the game behind the text; *See-through, dimmed* keeps the game
   visible and darkens it by the **Dimming** percentage. Higher dimming hides the original text better.
-- **Font** and **Size**: any `.ttf` / `.otf` file can be used. RemoteSub warns you if the font lacks
-  Turkish letters.
+- **Font** and **Size**: subtitles use the built-in Montserrat (close to the typeface Rockstar games use)
+  unless you choose another `.ttf` / `.otf` file. RemoteSub warns you if the font lacks Turkish letters.
+  The size stays as chosen; it never grows or shrinks to fit the area.
+- A translation stays up to 4 seconds after the original line disappears, or until the next line comes.
 
 ## Android TV
 
@@ -182,6 +184,10 @@ Attach one to a profile with **Choose…** next to *Dictionary*. Every subtitle 
 tolerating small OCR mistakes. Only lines that aren't found go to the AI model. The *Last translation*
 box tells you which one answered (*dictionary*, *cache* or *model*). If the file changes while you play
 (for example while more lines are being translated), RemoteSub picks up the new version within 30 seconds.
+
+Every line the model translates is also kept in a *learned dictionary* (`learned/en_tr.json` in the
+app's data folder, one file per language pair), so a line is never sent to the model twice, even after
+a restart. The TV app keeps the same file, in the same format, and the two can be copied across.
 
 A dictionary built from a game's own text is usually by far the best option: it is instant, and if it
 comes from a human translation it reads much better. **Game text belongs to its publisher, so keep

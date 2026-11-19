@@ -175,6 +175,7 @@ TURKISH = {
     "not chosen": "seçilmedi",
     "none · every line goes to the model": "yok · her satır modele gider",
     "System font": "Sistem yazı tipi",
+    "Montserrat (built-in)": "Montserrat (yerleşik)",
     "New profile": "Yeni profil",
     "Game name:": "Oyunun adı:",
     "Delete profile": "Profili sil",

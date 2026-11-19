@@ -50,6 +50,11 @@ LOG_PATH = os.path.join(APP_DIR, "log.txt")
 SHOTS_DIR = os.path.join(APP_DIR, "shots")
 DICTIONARY_DIR = os.path.join(APP_DIR, "dictionaries")
 FONT_DIR = os.path.join(APP_DIR, "fonts")
+# Lines the model has translated, per language pair; the same format and file name as on the TV app.
+LEARNED_DIR = os.path.join(APP_DIR, "learned")
+# Montserrat Medium: a free, close match for the Chalet-style face Rockstar uses for subtitles.
+BUNDLED_FONT = os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__))),
+                            "fonts", "Montserrat-Medium.ttf")
 # While this file exists, the next translation of a multi-line subtitle is snapshotted.
 SNAP_MULTILINE_FLAG = os.path.join(APP_DIR, "snap_multiline.flag")
 
@@ -80,7 +85,8 @@ PLACEMENTS = {"cover": "Cover the region", "above": "Above the region", "match":
 VIDEO_ASPECT = 16 / 9
 READ_INTERVAL = 0.14     # seconds between OCR reads of the region
 CONFIRM_READS = 2        # a new line must read the same this many times before it is translated
-EMPTY_READS_TO_HIDE = 2  # blank reads before the overlay is hidden
+EMPTY_READS_TO_HIDE = 2  # blank reads before the original counts as gone
+HOLD_SECONDS = 4.0       # the translation stays this long after the original goes, unless a new line comes
 SAME_TEXT_RATIO = 0.9    # OCR jitter tolerance when comparing lines
 
 HOTKEY_TOGGLE, HOTKEY_REGION, HOTKEY_HIDE, HOTKEY_SNAP = 1, 2, 3, 4
@@ -199,8 +205,38 @@ class Translator:
         self.url = cfg["ollama_url"].rstrip("/") + "/api/generate"
         self.model = cfg["model"]
         self.source, self.target = cfg["source"], cfg["target"]
-        self.cache = {}
         self.dictionaries = {}  # file name -> Dictionary, loaded on first use
+        self.learned_path = os.path.join(LEARNED_DIR, f"{self.source}_{self.target}.json")
+        self.learned_raw, self.learned = {}, None
+        self.learned_lock = threading.Lock()
+
+    def learned_dictionary(self):
+        """Every line the model has translated, kept on disk so it is never sent to the model again.
+        Same format as the other dictionaries, so the file can be shared with the TV app."""
+        with self.learned_lock:
+            if self.learned is None:
+                try:
+                    with open(self.learned_path, encoding="utf-8") as f:
+                        self.learned_raw = json.load(f)
+                except (OSError, ValueError):
+                    self.learned_raw = {}
+                self.learned = Dictionary(raw=self.learned_raw)
+                log(f"learned dictionary {os.path.basename(self.learned_path)}: {len(self.learned)} lines")
+            return self.learned
+
+    def learn(self, source, translation):
+        dictionary = self.learned_dictionary()
+        with self.learned_lock:
+            dictionary.put(source, translation)
+            self.learned_raw[source] = translation
+            try:
+                os.makedirs(LEARNED_DIR, exist_ok=True)
+                tmp = self.learned_path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(self.learned_raw, f, ensure_ascii=False, indent=1)
+                os.replace(tmp, self.learned_path)
+            except OSError as e:
+                log(f"couldn't save the learned dictionary: {e}")
 
     def _generate(self, payload):
         req = urllib.request.Request(self.url, json.dumps(payload).encode("utf-8"),
@@ -246,8 +282,9 @@ class Translator:
             found = dictionary.lookup(text)
             if found:
                 return found, "dictionary"
-        if text in self.cache:
-            return self.cache[text], "cache"
+        found = self.learned_dictionary().lookup(text)
+        if found:
+            return found, "cache"
         src = LANG_NAMES.get(self.source, self.source)
         tgt = LANG_NAMES.get(self.target, self.target)
         # TranslateGemma is trained on this exact prompt shape (note the two blank lines).
@@ -271,7 +308,7 @@ class Translator:
         # A translation far longer than its source means the model added sentences; retry once.
         if len(out) > 1.8 * len(text) + 15:
             out = min(out, run(0.4), key=len)
-        self.cache[text] = out
+        self.learn(text, out)
         return out, "model"
 
 
@@ -290,6 +327,7 @@ class Pipeline(threading.Thread):
 
     def run(self):
         threading.Thread(target=self.translator.warm_up, daemon=True).start()
+        threading.Thread(target=self.translator.learned_dictionary, daemon=True).start()
         ocr = OcrEngine(APP_DIR, log)
         log(f"OCR engine: {ocr.name}")
         capturer = plat.Capturer()
@@ -360,10 +398,15 @@ class Pipeline(threading.Thread):
                 empty_reads += 1
                 candidate, candidate_reads = "", 0
                 if shown_src and empty_reads >= EMPTY_READS_TO_HIDE:
-                    self.post("hide")
-                    shown_src = ""
+                    # Short lines flash by: keep the translation up a few seconds so it can be read.
+                    if gone_at is None:
+                        gone_at = t_ocr
+                    elif t_ocr - gone_at >= HOLD_SECONDS:
+                        self.post("hide")
+                        shown_src, gone_at = "", None
             else:
                 empty_reads = 0
+                gone_at = None
                 if shown_src and similar(text, shown_src):
                     candidate, candidate_reads = "", 0
                 elif candidate and similar(text, candidate):
@@ -405,17 +448,18 @@ _fonts = {}
 
 
 def subtitle_font(px, font_file=None):
-    """The chosen font file, else the platform's UI font (semibold when it is a variable font)."""
+    """The chosen font file, else the bundled Montserrat, else the platform's UI font (semibold
+    when it is a variable font)."""
     key = (px, font_file)
     if key not in _fonts:
-        for path in ([font_file] if font_file else []) + plat.FONT_FILES:
+        for path in ([font_file] if font_file else []) + [BUNDLED_FONT] + plat.FONT_FILES:
             if not path or not os.path.exists(path):
                 continue
             try:
                 font = ImageFont.truetype(path, px)
             except OSError:
                 continue
-            if path != font_file:
+            if path in plat.FONT_FILES:
                 try:
                     font.set_variation_by_name("Semibold")
                 except Exception:
@@ -818,7 +862,7 @@ class App:
         self.region_var.set(_("saved") if p.get("region") else _("not chosen"))
         self.dictionary_var.set(p["dictionary"] if p.get("dictionary") else _("none · every line goes to the model"))
         font_file = self.profile_font_path(p)
-        self.typeface_var.set(os.path.splitext(os.path.basename(font_file))[0] if font_file else _("System font"))
+        self.typeface_var.set(os.path.splitext(os.path.basename(font_file))[0] if font_file else _("Montserrat (built-in)"))
         self.background_var.set(_(BACKGROUNDS[p.get("background", "blur")]))
         self.dim_var.set(p.get("dim_percent", 55))
         self.dim_label.configure(text=_("{value}%", value=p.get("dim_percent", 55)))
