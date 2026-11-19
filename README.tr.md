@@ -129,7 +129,9 @@ Her şey yeşil olunca **Başla**'ya bas.
 - **Konum**: *Bölgeyi kapla* orijinal altyazıyı tamamen gizler; *Bölgenin üstünde* orijinali görünür
   bırakır; *İngilizce yazının yerine* çeviriyi tam İngilizce satırın olduğu yere koyar, çeviri daha
   uzunsa kutuyu genişletir.
-- **Arka plan**: *Buzlu cam* yazının arkasındaki oyunu bulanıklaştırır; *Şeffaf, karartılmış* oyunu
+- **Arka plan**: *Satır kutuları (oyun tarzı)* (varsayılan) her satırı oyunların kendi altyazıları
+  gibi ayrı, hafif yuvarlak köşeli koyu bir kutuya koyar; **Karartma** kutuların koyuluğunu belirler
+  (İngilizce yazının yerine konumunda kutular hep opaktır, orijinal yazı alttan görünmez). *Buzlu cam* yazının arkasındaki oyunu bulanıklaştırır; *Şeffaf, karartılmış* oyunu
   görünür bırakır ve **Karartma** yüzdesi kadar karartır. Karartma arttıkça orijinal yazı daha iyi kapanır.
 - **Yazı tipi** ve **Boyut**: başka bir `.ttf` / `.otf` dosyası seçmezsen altyazılar yerleşik Montserrat
   ile yazılır (Rockstar oyunlarının yazı tipine yakındır). Yazı tipinde Türkçe harfler yoksa RemoteSub

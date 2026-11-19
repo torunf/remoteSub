@@ -132,7 +132,9 @@ When everything is green, press **Start**.
 - **Placement**: *Cover the region* hides the original subtitles completely; *Above the region* keeps
   them visible; *In place of the English text* puts the translation exactly where the English line is,
   widening the box when the translation is longer.
-- **Background**: *Frosted glass* blurs the game behind the text; *See-through, dimmed* keeps the game
+- **Background**: *Line boxes (game style)* (the default) draws each line in its own dark, slightly
+  rounded box like the games' own subtitles; **Dimming** sets how dark the boxes are (in place of the
+  English text they are always opaque, so the original never shows through). *Frosted glass* blurs the game behind the text; *See-through, dimmed* keeps the game
   visible and darkens it by the **Dimming** percentage. Higher dimming hides the original text better.
 - **Font** and **Size**: subtitles use the built-in Montserrat (close to the typeface Rockstar games use)
   unless you choose another `.ttf` / `.otf` file. RemoteSub warns you if the font lacks Turkish letters.

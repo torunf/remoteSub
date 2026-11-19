@@ -142,6 +142,7 @@ TURKISH = {
     "Cover the region": "Bölgeyi kapla",
     "Above the region": "Bölgenin üstünde",
     "In place of the English text": "İngilizce yazının yerine",
+    "Line boxes (game style)": "Satır kutuları (oyun tarzı)",
     "Frosted glass": "Buzlu cam",
     "See-through, dimmed": "Şeffaf, karartılmış",
     "Default": "Varsayılan",

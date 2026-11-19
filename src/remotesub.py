@@ -58,8 +58,9 @@ BUNDLED_FONT = os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(os.path.abs
 # While this file exists, the next translation of a multi-line subtitle is snapshotted.
 SNAP_MULTILINE_FLAG = os.path.join(APP_DIR, "snap_multiline.flag")
 
-DEFAULT_PROFILE = {"region": None, "font_size": 20, "placement": "cover", "font_file": None,
-                   "background": "blur", "dim_percent": 55}
+# New profiles look like the games' own subtitles: one dark box per line, in place of the English.
+DEFAULT_PROFILE = {"region": None, "font_size": 20, "placement": "match", "font_file": None,
+                   "background": "lines", "dim_percent": 75}
 # Machine-specific values start empty; the setup steps (setup_steps.py) fill them in.
 DEFAULT_CONFIG = {
     "ollama_url": "",
@@ -78,7 +79,7 @@ DEFAULT_CONFIG = {
 LANG_NAMES = {"en": "English", "tr": "Turkish", "de": "German", "fr": "French", "es": "Spanish",
               "it": "Italian", "ja": "Japanese", "ko": "Korean", "ru": "Russian", "zh": "Chinese"}
 # Labels are looked up when shown, after the interface language is chosen.
-BACKGROUNDS = {"blur": "Frosted glass", "dim": "See-through, dimmed"}
+BACKGROUNDS = {"lines": "Line boxes (game style)", "blur": "Frosted glass", "dim": "See-through, dimmed"}
 MUTED = "#9aa0a6"  # secondary text on the dark theme
 PLACEMENTS = {"cover": "Cover the region", "above": "Above the region", "match": "In place of the English text"}
 
@@ -177,7 +178,8 @@ def region_to_screen(region, video):
 # ---------------------------------------------------------------- OCR and translation
 
 def extract_text(ocr_lines):
-    """Subtitle lines joined into one sentence, the number of lines, and the box around them.
+    """Subtitle lines joined into one sentence, the number of lines, the box around them and each
+    line's box.
 
     ocr_lines: [(text, (x0, y0, x1, y1))] in image pixels; the box is None when nothing is kept."""
     lines, boxes = [], []
@@ -187,9 +189,9 @@ def extract_text(ocr_lines):
             lines.append(text)
             boxes.append(box)
     if not boxes:
-        return "", 0, None
+        return "", 0, None, []
     union = (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
-    return " ".join(lines), len(lines), union
+    return " ".join(lines), len(lines), union, boxes
 
 
 def looks_turkish(text):
@@ -335,6 +337,7 @@ class Pipeline(threading.Thread):
         shown_src = ""            # source text of the translation currently on screen
         candidate, candidate_reads, first_seen = "", 0, 0.0
         empty_reads = 0
+        gone_at = None            # when the subtitle disappeared from the game, for HOLD_SECONDS
         last_box = None
         allowed, next_permission_check = False, 0.0
 
@@ -390,7 +393,7 @@ class Pipeline(threading.Thread):
                 continue
             frame = capturer.grab(hwnd, box)
             t_ocr = time.perf_counter()
-            text, n_lines, text_box = extract_text(ocr.read(frame))
+            text, n_lines, text_box, line_boxes = extract_text(ocr.read(frame))
             ocr_ms = (time.perf_counter() - t_ocr) * 1000
             self.post("status", _("Running · OCR {ms} ms", ms=round(ocr_ms)))
 
@@ -429,12 +432,11 @@ class Pipeline(threading.Thread):
                                translation=round(1000 * (done - t_tr)), origin=_(origin))
                     # Where the English text sits, in screen pixels relative to the region (the
                     # frame can be at a higher resolution than the screen, e.g. Retina).
-                    text_rel = None
-                    if text_box:
-                        sx, sy = frame.width / w, frame.height / h
-                        text_rel = (text_box[0] / sx, text_box[1] / sy,
-                                    (text_box[2] - text_box[0]) / sx, (text_box[3] - text_box[1]) / sy)
-                    self.post("show", candidate, translated, timing, n_lines, frame, text_rel)
+                    sx, sy = frame.width / w, frame.height / h
+                    to_rel = lambda b: (b[0] / sx, b[1] / sy, (b[2] - b[0]) / sx, (b[3] - b[1]) / sy)
+                    text_rel = to_rel(text_box) if text_box else None
+                    lines_rel = [to_rel(b) for b in line_boxes]
+                    self.post("show", candidate, translated, timing, n_lines, frame, text_rel, lines_rel)
                     log(f"{timing} | {candidate!r} -> {translated!r}")
                     shown_src, candidate, candidate_reads = candidate, "", 0
 
@@ -580,6 +582,64 @@ def fit_over_text(text, region, text_rel, font_px, font_file, frame, bg_mode="bl
     return img, left, round(bottom - img.height)
 
 
+def render_game_style(text, region, placement, text_rel, lines_rel, font_px, font_file, opacity):
+    """Subtitles the way games draw them: one dark, slightly rounded box per line, white text,
+    centred, lines stacked. (image, x, y)
+
+    In place of the English text, each English line's box is covered too (the Turkish usually wraps
+    differently), so none of the original peeks out around the edges."""
+    rx, ry, rw, rh = region
+    font = subtitle_font(font_px, font_file)
+    pad_x, pad_y = round(font_px * 0.38), round(font_px * 0.16)
+    line_h = round(font_px * 1.18) + 2 * pad_y
+    gap = max(2, round(font_px * 0.12))
+    radius = max(2, round(font_px * 0.14))
+
+    covers = []
+    if placement == "match" and text_rel:
+        tx, ty, tw, th = text_rel
+        centre_x, bottom = rx + tx + tw / 2, ry + ty + th + pad_y
+        wrap_width = min(rw, max(tw, rw * 0.55))
+        covers = [(rx + lx - pad_x, ry + ly - pad_y, rx + lx + lw + pad_x, ry + ly + lh + pad_y)
+                  for lx, ly, lw, lh in lines_rel or [text_rel]]
+    elif placement == "above":
+        centre_x, bottom, wrap_width = rx + rw / 2, ry - 6, rw
+    else:
+        centre_x, bottom, wrap_width = rx + rw / 2, ry + rh, rw
+
+    lines = wrap_balanced(text, font, max(10, wrap_width - 2 * pad_x))
+    top = bottom - len(lines) * line_h - (len(lines) - 1) * gap
+    boxes = []
+    for i, line in enumerate(lines):
+        width = font.getlength(line) + 2 * pad_x
+        y0 = top + i * (line_h + gap)
+        boxes.append((centre_x - width / 2, y0, centre_x + width / 2, y0 + line_h, line))
+
+    rects = [b[:4] for b in boxes] + covers
+    left, upper = int(min(r[0] for r in rects)) - 1, int(min(r[1] for r in rects)) - 1
+    right, lower = int(max(r[2] for r in rects)) + 2, int(max(r[3] for r in rects)) + 2
+    size = (right - left, lower - upper)
+
+    # One mask for every box, so overlapping boxes don't get darker where they meet.
+    mask = Image.new("L", size, 0)
+    draw = ImageDraw.Draw(mask)
+    for x0, y0, x1, y1 in rects:
+        draw.rounded_rectangle((x0 - left, y0 - upper, x1 - left, y1 - upper), radius, fill=255)
+    if covers:
+        opacity = max(opacity, 98)  # the English must not show through the Turkish
+    alpha = round(255 * min(max(opacity, 0), 100) / 100)
+    img = Image.new("RGBA", size, (0, 0, 0, 0))
+    img.paste((10, 10, 12, alpha), mask=mask)
+
+    text_layer = Image.new("RGBA", size, (0, 0, 0, 0))
+    td = ImageDraw.Draw(text_layer)
+    for x0, y0, x1, y1, line in boxes:
+        bbox = font.getbbox(line)
+        text_y = y0 - upper + (line_h - (bbox[3] + bbox[1])) / 2
+        td.text((x0 - left + pad_x, text_y), line, font=font, fill=(*TEXT_COLOR, 255))
+    return Image.alpha_composite(img, text_layer), left, upper
+
+
 class Overlay:
     def __init__(self, root):
         # Click-through, never focused, and kept out of screen capture so the OCR never reads
@@ -587,6 +647,7 @@ class Overlay:
         self.window = plat.OverlayWindow(root)
         self.background = None
         self.text_rel = None
+        self.lines_rel = None
         self.box = None
         self.text = ""
         self.hidden_by_user = False
@@ -605,8 +666,8 @@ class Overlay:
         self.box = box
         self._place()
 
-    def show(self, text, background=None, text_rel=None):
-        self.text, self.background, self.text_rel = text, background, text_rel
+    def show(self, text, background=None, text_rel=None, lines_rel=None):
+        self.text, self.background, self.text_rel, self.lines_rel = text, background, text_rel, lines_rel
         self._place()
 
     def hide(self):
@@ -623,7 +684,10 @@ class Overlay:
             return
         x, y, w, h = self.box
         font_px = self.window.font_px(self.font_size)
-        if self.placement == "match" and self.text_rel:
+        if self.bg_mode == "lines":
+            img, left, top = render_game_style(self.text, self.box, self.placement, self.text_rel,
+                                               self.lines_rel, font_px, self.font_file, self.dim_percent)
+        elif self.placement == "match" and self.text_rel:
             img, left, top = fit_over_text(self.text, self.box, self.text_rel, font_px, self.font_file,
                                            self.background, self.bg_mode, self.dim_percent)
         else:
@@ -866,7 +930,7 @@ class App:
         self.background_var.set(_(BACKGROUNDS[p.get("background", "blur")]))
         self.dim_var.set(p.get("dim_percent", 55))
         self.dim_label.configure(text=_("{value}%", value=p.get("dim_percent", 55)))
-        self.dim_scale.state(["!disabled"] if p.get("background") == "dim" else ["disabled"])
+        self.dim_scale.state(["!disabled"] if p.get("background") in ("dim", "lines") else ["disabled"])
         self.overlay.configure(p.get("font_size", 20), p.get("placement", "cover"), font_file,
                                p.get("background", "blur"), p.get("dim_percent", 55))
 
@@ -1133,8 +1197,8 @@ class App:
                 elif kind == "move":
                     self.overlay.move(args[0])
                 elif kind == "show":
-                    src, dst, timing, n_lines, frame, text_rel = args
-                    self.overlay.show(dst, frame, text_rel)
+                    src, dst, timing, n_lines, frame, text_rel, lines_rel = args
+                    self.overlay.show(dst, frame, text_rel, lines_rel)
                     self.src_var.set(src)
                     self.dst_var.set(dst)
                     self.timing_var.set(timing)
