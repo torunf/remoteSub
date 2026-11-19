@@ -137,6 +137,36 @@ When everything is green, press **Start**.
 - **Font** and **Size**: any `.ttf` / `.otf` file can be used. RemoteSub warns you if the font lacks
   Turkish letters.
 
+## Android TV
+
+RemoteSub also runs on Android TV / Google TV as its own app, **RemoteSub TV**. It is a PS5 Remote Play
+client (built on chiaki-ng's Android code) with RemoteSub built in: it reads the subtitles straight from the
+decoded video, so no screen recording permission or overlay permission is needed.
+
+| | |
+|---|---|
+| **OCR** | Google ML Kit, on the TV |
+| **Translation** | 1. the profile's dictionary → 2. TranslateGemma through Ollama on a computer on the home network → 3. ML Kit's offline model on the TV when that computer can't be reached (lower quality) |
+| **Controls** | Gamepad buttons go to the PS5. On the TV remote, **OK** (or Menu) opens the RemoteSub menu; **Captions** turns translation on/off |
+
+**Setup**
+
+1. Install `RemoteSub-TV-<version>.apk` on the TV (for example with `adb install`, or a sideloading app).
+2. Open it, add your PS5 and pair it as in chiaki-ng (Remote Play → Pair Device, 8-digit code).
+3. *Settings → RemoteSub*: try **Try it without a PS5** first. To use the better model, enter the computer
+   running Ollama under **Ollama server** (for example `192.168.1.20`) and press **Test the connection**.
+   Ollama must listen on the network: on macOS run `launchctl setenv OLLAMA_HOST 0.0.0.0` and restart
+   Ollama; on Windows set the `OLLAMA_HOST` environment variable to `0.0.0.0`.
+4. While playing, press **OK** → *Choose the subtitle area*. Arrows move the box, OK switches to resizing,
+   Back saves. Do this once per game profile.
+
+Dictionaries are the same JSON files as on the desktop, given by address, e.g. serve your dictionary
+folder with `python3 -m http.server 8000` and enter `http://192.168.1.20:8000/game_en_tr.json`. The TV
+keeps a copy, so it still works when the computer is off.
+
+Build it with `scripts/build_android.sh 0.1.0` → `dist/RemoteSub-TV-0.1.0.apk`. The Android TV app's code is
+under `android/`, and because it includes chiaki-ng it is licensed under the **AGPL-3.0** (`android/LICENSE`).
+
 ## Dictionaries
 
 A dictionary is a JSON file that maps original lines to translations:

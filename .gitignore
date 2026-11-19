@@ -6,3 +6,4 @@ dist/
 installer/windows/redist/
 .DS_Store
 src/_version.py
+.venv/

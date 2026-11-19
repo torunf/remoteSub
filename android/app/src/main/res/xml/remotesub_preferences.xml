@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:app="http://schemas.android.com/apk/res-auto">
+    <PreferenceCategory app:title="@string/rs_category_try">
+        <Preference
+            app:key="demo"
+            app:title="@string/rs_demo_title"
+            app:summary="@string/rs_demo_summary"/>
+        <SwitchPreference
+            app:key="translate_on_start"
+            app:defaultValue="true"
+            app:title="@string/rs_translate_on_start_title"
+            app:summary="@string/rs_translate_on_start_summary"/>
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="@string/rs_category_translation">
+        <EditTextPreference
+            app:key="ollama_url"
+            app:title="@string/rs_ollama_url_title"
+            app:dialogMessage="@string/rs_ollama_url_dialog"/>
+        <Preference
+            app:key="ollama_test"
+            app:title="@string/rs_ollama_test_title"
+            app:summary="@string/rs_ollama_test_summary"/>
+        <EditTextPreference
+            app:key="ollama_model"
+            app:title="@string/rs_model_title"/>
+        <ListPreference
+            app:key="source_lang"
+            app:defaultValue="en"
+            app:title="@string/rs_source_title"
+            app:summary="%s"/>
+        <ListPreference
+            app:key="target_lang"
+            app:defaultValue="tr"
+            app:title="@string/rs_target_title"
+            app:summary="%s"/>
+        <Preference
+            app:key="on_device_model"
+            app:title="@string/rs_ondevice_title"
+            app:summary="@string/rs_ondevice_summary"/>
+    </PreferenceCategory>
+</PreferenceScreen>

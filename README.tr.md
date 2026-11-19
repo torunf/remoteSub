@@ -134,6 +134,36 @@ Her şey yeşil olunca **Başla**'ya bas.
 - **Yazı tipi** ve **Boyut**: herhangi bir `.ttf` / `.otf` dosyası kullanılabilir. Yazı tipinde Türkçe
   harfler yoksa RemoteSub seni uyarır.
 
+## Android TV
+
+RemoteSub, Android TV / Google TV'de de kendi uygulaması olarak çalışır: **RemoteSub TV**. Bu, RemoteSub'ın
+içine yerleştirildiği bir PS5 Remote Play istemcisidir (chiaki-ng'nin Android kodu üzerine). Altyazıları
+doğrudan çözülen videodan okur; ekran kaydı ya da başka uygulamaların üzerinde gösterme izni gerekmez.
+
+| | |
+|---|---|
+| **OCR** | Google ML Kit, TV'nin üzerinde |
+| **Çeviri** | 1. profilin sözlüğü → 2. ev ağındaki bir bilgisayarda Ollama ile TranslateGemma → 3. o bilgisayara ulaşılamazsa TV'de ML Kit'in çevrimdışı modeli (daha düşük kalite) |
+| **Kontroller** | Oyun kolu tuşları PS5'e gider. TV kumandasında **OK** (ya da Menü) RemoteSub menüsünü açar; **Altyazı (Captions)** tuşu çeviriyi açıp kapatır |
+
+**Kurulum**
+
+1. `RemoteSub-TV-<sürüm>.apk` dosyasını TV'ye kurun (örneğin `adb install` ya da bir APK yükleme uygulamasıyla).
+2. Açın, PS5'inizi ekleyip chiaki-ng'deki gibi eşleştirin (Remote Play → Cihaz Eşleştir, 8 haneli kod).
+3. *Ayarlar → RemoteSub*: önce **PS5 olmadan dene** ile deneyin. Daha iyi model için **Ollama sunucusu**
+   alanına Ollama çalıştıran bilgisayarı yazın (örneğin `192.168.1.20`) ve **Bağlantıyı dene**'ye basın.
+   Ollama ağı dinlemeli: macOS'ta `launchctl setenv OLLAMA_HOST 0.0.0.0` çalıştırıp Ollama'yı yeniden
+   başlatın; Windows'ta `OLLAMA_HOST` ortam değişkenini `0.0.0.0` yapın.
+4. Oynarken **OK** → *Altyazı bölgesini seç*. Oklar kutuyu taşır, OK boyutlandırmaya geçer, Geri kaydeder.
+   Her oyun profili için bir kez yapılır.
+
+Sözlükler masaüstündeki JSON dosyalarının aynısıdır ve adresle verilir; örneğin sözlük klasörünü
+`python3 -m http.server 8000` ile paylaşıp `http://192.168.1.20:8000/oyun_en_tr.json` yazın. TV bir kopyasını
+saklar, bilgisayar kapalıyken de çalışır.
+
+Derlemek için: `scripts/build_android.sh 0.1.0` → `dist/RemoteSub-TV-0.1.0.apk`. Android TV uygulamasının kodu
+`android/` altındadır; chiaki-ng'yi içerdiği için **AGPL-3.0** lisanslıdır (`android/LICENSE`).
+
 ## Sözlükler
 
 Sözlük, orijinal satırları çevirileriyle eşleştiren bir JSON dosyasıdır:
